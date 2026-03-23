@@ -78,6 +78,13 @@ public class TicketRepository
         return entity;
     }
 
+    public async Task<Ticket?> GetByIdAsync(string id)
+    {
+        var filter = Builders<Ticket>.Filter.Eq(t => t.Id, id)
+                   & Builders<Ticket>.Filter.Eq(t => t.IsVoid, false);
+        return await _collection.Find(filter).FirstOrDefaultAsync();
+    }
+
     public async Task<Ticket?> GetByCustomerEmailAndProjectAsync(string email, string projectId)
     {
         var filter = Builders<Ticket>.Filter.Eq(t => t.CustomerEmail, email)
@@ -85,6 +92,23 @@ public class TicketRepository
                    & Builders<Ticket>.Filter.Eq(t => t.IsVoid, false)
                    & Builders<Ticket>.Filter.In(t => t.Status, new[] { 0, 1 }); // Open, Pending
         return await _collection.Find(filter).SortByDescending(t => t.CreatedOnDateTime).FirstOrDefaultAsync();
+    }
+
+    public async Task<Ticket?> GetByTicketNumberAndProjectAsync(long ticketNumber, string projectId)
+    {
+        var filter = Builders<Ticket>.Filter.Eq(t => t.TicketNumber, ticketNumber)
+                   & Builders<Ticket>.Filter.Eq(t => t.ProjectId, projectId)
+                   & Builders<Ticket>.Filter.Eq(t => t.IsVoid, false);
+        return await _collection.Find(filter).FirstOrDefaultAsync();
+    }
+
+    public async Task UpdateStatusAsync(string ticketId, int status)
+    {
+        var filter = Builders<Ticket>.Filter.Eq(t => t.Id, ticketId);
+        var update = Builders<Ticket>.Update
+            .Set(t => t.Status, status)
+            .Set(t => t.UpdatedOnDateTime, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        await _collection.UpdateOneAsync(filter, update);
     }
 }
 

@@ -127,6 +127,7 @@ public class IntakeRuleCondition
     public string Value { get; set; } = string.Empty;
 }
 
+[BsonIgnoreExtraElements]
 public class Ticket : BaseEntity
 {
     public string CompanyId { get; set; } = string.Empty;

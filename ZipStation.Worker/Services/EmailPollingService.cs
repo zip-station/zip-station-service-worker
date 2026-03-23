@@ -320,16 +320,60 @@ public class EmailPollingService : IEmailPollingService
             return false;
         }
 
-        // Look for an open/pending ticket from this customer in this project
-        _logger.LogInformation("Threading check: looking for open/pending ticket from {Email} in project {ProjectId}",
-            fromAddress.Address, project.Id);
-        var existingTicket = await _ticketRepository.GetByCustomerEmailAndProjectAsync(
-            fromAddress.Address, project.Id);
+        Ticket? existingTicket = null;
+
+        // Strategy 1: Check In-Reply-To and References headers for our ticket anchor
+        // Our outgoing emails set InReplyTo/References to "<ticket-{ticketId}@domain>"
+        // When customers reply, their client preserves these in the References chain
+        var ticketIdFromHeaders = TryExtractTicketIdFromHeaders(message);
+        if (ticketIdFromHeaders != null)
+        {
+            _logger.LogInformation("Threading check: found ticket ID {TicketId} in email headers", ticketIdFromHeaders);
+            existingTicket = await _ticketRepository.GetByIdAsync(ticketIdFromHeaders);
+            if (existingTicket != null)
+                _logger.LogInformation("Found ticket {TicketId} (status={Status}) by email headers",
+                    existingTicket.Id, existingTicket.Status);
+        }
+
+        // Strategy 2: Try to extract ticket ID from subject line
+        // Subject looks like "Re: ProjectName - Ticket SG-001" or "RE: Fwd: ProjectName - Ticket 001"
+        if (existingTicket == null)
+        {
+            var subject = message.Subject ?? "";
+            var ticketNumber = TryParseTicketNumberFromSubject(subject, project.Settings?.TicketId);
+            if (ticketNumber.HasValue)
+            {
+                _logger.LogInformation("Threading check: parsed ticket number {TicketNumber} from subject \"{Subject}\"",
+                    ticketNumber.Value, subject);
+                existingTicket = await _ticketRepository.GetByTicketNumberAndProjectAsync(ticketNumber.Value, project.Id);
+                if (existingTicket != null)
+                    _logger.LogInformation("Found ticket {TicketId} (status={Status}) by ticket number {TicketNumber}",
+                        existingTicket.Id, existingTicket.Status, ticketNumber.Value);
+            }
+        }
+
+        // Strategy 3: Fall back to matching by customer email (Open/Pending only)
+        if (existingTicket == null)
+        {
+            _logger.LogInformation("Threading check: looking for open/pending ticket from {Email} in project {ProjectId}",
+                fromAddress.Address, project.Id);
+            existingTicket = await _ticketRepository.GetByCustomerEmailAndProjectAsync(
+                fromAddress.Address, project.Id);
+        }
 
         if (existingTicket == null)
         {
-            _logger.LogInformation("No open/pending ticket found for {Email}", fromAddress.Address);
+            _logger.LogInformation("No existing ticket found for threading (email={Email}, subject=\"{Subject}\")",
+                fromAddress.Address, message.Subject ?? "");
             return false;
+        }
+
+        // If ticket was Closed or Resolved, reopen it
+        if (existingTicket.Status is 2 or 3) // Resolved=2, Closed=3
+        {
+            _logger.LogInformation("Reopening ticket {TicketId} (was status={Status}) due to customer reply",
+                existingTicket.Id, existingTicket.Status);
+            await _ticketRepository.UpdateStatusAsync(existingTicket.Id, 0); // Open
         }
 
         var bodyText = message.TextBody ?? "";
@@ -355,6 +399,69 @@ public class EmailPollingService : IEmailPollingService
             fromAddress.Address, existingTicket.Id);
 
         return true;
+    }
+
+    /// <summary>
+    /// Extracts a ticket ID from email In-Reply-To and References headers.
+    /// Our outgoing emails use the pattern: &lt;ticket-{mongoId}@domain&gt;
+    /// and &lt;{messageId}@domain&gt;. The customer's reply will reference these.
+    /// </summary>
+    private static string? TryExtractTicketIdFromHeaders(MimeMessage message)
+    {
+        // Collect all header values to check: In-Reply-To + References
+        var headerValues = new List<string>();
+        if (!string.IsNullOrEmpty(message.InReplyTo))
+            headerValues.Add(message.InReplyTo);
+        foreach (var reference in message.References)
+            headerValues.Add(reference);
+
+        // Look for our ticket anchor pattern: ticket-{24-char hex ObjectId}@
+        var pattern = @"ticket-([a-f0-9]{24})@";
+        foreach (var header in headerValues)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(header, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (match.Success)
+                return match.Groups[1].Value;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Tries to extract a ticket number from an email subject line.
+    /// Handles subjects like "Re: Softgoods - Ticket SG-001", "RE: FW: Softgoods - Ticket 042", etc.
+    /// Matches the project's configured prefix if set.
+    /// </summary>
+    private static long? TryParseTicketNumberFromSubject(string subject, TicketIdSettings? settings)
+    {
+        if (string.IsNullOrEmpty(subject)) return null;
+
+        var prefix = settings?.Prefix ?? "";
+
+        // Build a regex pattern to match the ticket ID in the subject
+        // With prefix: "SG-001", "SG-42", "SG-0001"
+        // Without prefix: just digits like "001", "42"
+        string pattern;
+        if (!string.IsNullOrEmpty(prefix))
+        {
+            // Match prefix-digits (case insensitive), e.g. SG-001
+            pattern = $@"(?:^|[\s\-])({System.Text.RegularExpressions.Regex.Escape(prefix)}-(\d+))(?:\s|$|[)\]])";
+        }
+        else
+        {
+            // Without prefix, look for "Ticket NNN" pattern to avoid matching random numbers
+            pattern = @"[Tt]icket\s+(\d+)";
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(subject, pattern, System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!match.Success) return null;
+
+        // Extract the numeric part
+        var numberStr = !string.IsNullOrEmpty(prefix) ? match.Groups[2].Value : match.Groups[1].Value;
+        if (long.TryParse(numberStr, out var ticketNumber) && ticketNumber > 0)
+            return ticketNumber;
+
+        return null;
     }
 
     private async Task CreateTicketFromIntakeAsync(Project project, IntakeEmail intake)
