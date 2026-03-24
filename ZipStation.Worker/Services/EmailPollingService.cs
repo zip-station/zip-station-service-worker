@@ -394,6 +394,7 @@ public class EmailPollingService : IEmailPollingService
         };
 
         await _ticketMessageRepository.CreateAsync(ticketMessage);
+        await _ticketRepository.SetLastMessageSourceAsync(existingTicket.Id, 0); // Customer
 
         _logger.LogInformation("Threaded reply from {From} to ticket {TicketId}",
             fromAddress.Address, existingTicket.Id);

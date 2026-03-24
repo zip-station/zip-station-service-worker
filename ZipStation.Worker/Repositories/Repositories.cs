@@ -111,6 +111,15 @@ public class TicketRepository
         await _collection.UpdateOneAsync(filter, update);
     }
 
+    public async Task SetLastMessageSourceAsync(string ticketId, int source)
+    {
+        var filter = Builders<Ticket>.Filter.Eq(t => t.Id, ticketId);
+        var update = Builders<Ticket>.Update
+            .Set(t => t.LastMessageSource, source)
+            .Set(t => t.UpdatedOnDateTime, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        await _collection.UpdateOneAsync(filter, update);
+    }
+
     public async Task<bool> ExistsByTicketNumberAndProjectAsync(string projectId, long ticketNumber)
     {
         var filter = Builders<Ticket>.Filter.Eq(t => t.ProjectId, projectId)

@@ -143,6 +143,7 @@ public class Ticket : BaseEntity
     public string? CustomerEmail { get; set; }
     public List<string> Tags { get; set; } = new();
     public int CreationSource { get; set; } = 0;
+    public int? LastMessageSource { get; set; } // 0=Customer, 1=Agent, 2=System
 }
 
 public class TicketMessage : BaseEntity
