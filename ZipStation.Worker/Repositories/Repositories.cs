@@ -71,7 +71,8 @@ public class TicketRepository
     {
         if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        entity.CreatedOnDateTime = now;
+        if (entity.CreatedOnDateTime == 0)
+            entity.CreatedOnDateTime = now;
         entity.UpdatedOnDateTime = now;
         entity.IsVoid = false;
         await _collection.InsertOneAsync(entity);
@@ -137,7 +138,8 @@ public class TicketMessageRepository
     {
         if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        entity.CreatedOnDateTime = now;
+        if (entity.CreatedOnDateTime == 0)
+            entity.CreatedOnDateTime = now;
         entity.UpdatedOnDateTime = now;
         entity.IsVoid = false;
         await _collection.InsertOneAsync(entity);

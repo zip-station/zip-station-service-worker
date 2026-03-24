@@ -509,7 +509,7 @@ public class EmailPollingService : IEmailPollingService
 
         var createdTicket = await _ticketRepository.CreateAsync(ticket);
 
-        // Create first message from customer
+        // Create first message from customer — preserve original email timestamp
         var message = new TicketMessage
         {
             TicketId = createdTicket.Id,
@@ -520,7 +520,8 @@ public class EmailPollingService : IEmailPollingService
             IsInternalNote = false,
             AuthorName = intake.FromName,
             AuthorEmail = intake.FromEmail,
-            Source = 0 // Customer
+            Source = 0, // Customer
+            CreatedOnDateTime = intake.ReceivedOn > 0 ? intake.ReceivedOn : 0
         };
         await _ticketMessageRepository.CreateAsync(message);
 
