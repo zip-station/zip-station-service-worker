@@ -481,8 +481,8 @@ public class EmailPollingService : IEmailPollingService
         }
 
         // Generate ticket number
-        var ticketNumber = await _ticketIdCounterRepository.GetNextTicketNumberAsync(project.Id);
         var ticketIdSettings = project.Settings.TicketId;
+        var ticketNumber = await GenerateTicketNumberAsync(project.Id, ticketIdSettings);
         var displayId = FormatTicketId(ticketNumber, ticketIdSettings);
         var subject = (ticketIdSettings.SubjectTemplate ?? "{ProjectName} - Ticket {TicketId}")
             .Replace("{ProjectName}", project.Name)
@@ -596,6 +596,29 @@ public class EmailPollingService : IEmailPollingService
         if (linkCount > 5) score += 20;
 
         return Math.Min(score, 100);
+    }
+
+    private async Task<long> GenerateTicketNumberAsync(string projectId, TicketIdSettings settings)
+    {
+        if (!settings.UseRandomNumbers)
+        {
+            var next = await _ticketIdCounterRepository.GetNextTicketNumberAsync(projectId);
+            return Math.Max(next, settings.StartingNumber > 0 ? settings.StartingNumber : next);
+        }
+
+        var min = settings.StartingNumber > 0 ? settings.StartingNumber : (long)Math.Pow(10, Math.Max(settings.MinLength, 3) - 1);
+        var max = (long)Math.Pow(10, settings.MaxLength) - 1;
+        if (min > max) min = max / 2;
+
+        var random = new Random();
+        for (var attempt = 0; attempt < 100; attempt++)
+        {
+            var candidate = (long)(random.NextDouble() * (max - min + 1)) + min;
+            var exists = await _ticketRepository.ExistsByTicketNumberAndProjectAsync(projectId, candidate);
+            if (!exists) return candidate;
+        }
+
+        return await _ticketIdCounterRepository.GetNextTicketNumberAsync(projectId);
     }
 
     private static string FormatTicketId(long ticketNumber, TicketIdSettings settings)

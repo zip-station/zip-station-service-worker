@@ -110,6 +110,13 @@ public class TicketRepository
             .Set(t => t.UpdatedOnDateTime, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         await _collection.UpdateOneAsync(filter, update);
     }
+
+    public async Task<bool> ExistsByTicketNumberAndProjectAsync(string projectId, long ticketNumber)
+    {
+        var filter = Builders<Ticket>.Filter.Eq(t => t.ProjectId, projectId)
+                   & Builders<Ticket>.Filter.Eq(t => t.TicketNumber, ticketNumber);
+        return await _collection.CountDocumentsAsync(filter) > 0;
+    }
 }
 
 public class TicketMessageRepository

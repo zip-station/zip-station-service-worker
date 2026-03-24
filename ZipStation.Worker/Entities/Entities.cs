@@ -85,6 +85,8 @@ public class TicketIdSettings
     public int MaxLength { get; set; } = 6;
     public int Format { get; set; } = 0; // 0=Numeric, 1=Alphanumeric, 2=DateNumeric
     public string SubjectTemplate { get; set; } = "{ProjectName} - Ticket {TicketId}";
+    public long StartingNumber { get; set; }
+    public bool UseRandomNumbers { get; set; }
 }
 
 public class IntakeEmail : BaseEntity
