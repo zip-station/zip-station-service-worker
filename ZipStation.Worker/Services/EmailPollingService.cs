@@ -195,7 +195,7 @@ public class EmailPollingService : IEmailPollingService
 
         // Create intake email — prefer plain text, fall back to stripped HTML
         var bodyText = message.TextBody ?? "";
-        var bodyHtml = message.HtmlBody;
+        var bodyHtml = ResolveInlineImages(message.HtmlBody, message);
 
         // If no plain text body, extract text from HTML
         if (string.IsNullOrWhiteSpace(bodyText) && !string.IsNullOrEmpty(bodyHtml))
@@ -377,7 +377,7 @@ public class EmailPollingService : IEmailPollingService
         }
 
         var bodyText = message.TextBody ?? "";
-        var bodyHtml = message.HtmlBody;
+        var bodyHtml = ResolveInlineImages(message.HtmlBody, message);
 
         // Add as a new message on the existing ticket
         var ticketMessage = new TicketMessage
@@ -793,6 +793,48 @@ public class EmailPollingService : IEmailPollingService
             if (client.IsConnected)
                 await client.DisconnectAsync(true, ct);
         }
+    }
+
+    /// <summary>
+    /// Replaces cid: image references in HTML with inline base64 data URIs.
+    /// This allows inline images from customer emails to display in the ticket thread.
+    /// </summary>
+    private static string? ResolveInlineImages(string? html, MimeMessage message)
+    {
+        if (string.IsNullOrEmpty(html)) return html;
+        if (!html.Contains("cid:", StringComparison.OrdinalIgnoreCase)) return html;
+
+        // Build a lookup of ContentId → base64 data URI
+        var cidMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var part in message.BodyParts)
+        {
+            if (part is MimePart mimePart && !string.IsNullOrEmpty(mimePart.ContentId))
+            {
+                try
+                {
+                    using var stream = new System.IO.MemoryStream();
+                    mimePart.Content.DecodeTo(stream);
+                    var base64 = Convert.ToBase64String(stream.ToArray());
+                    var mimeType = mimePart.ContentType.MimeType ?? "image/png";
+                    var dataUri = $"data:{mimeType};base64,{base64}";
+
+                    // ContentId may be wrapped in angle brackets
+                    var cid = mimePart.ContentId.Trim('<', '>');
+                    cidMap[cid] = dataUri;
+                }
+                catch { /* skip unreadable parts */ }
+            }
+        }
+
+        if (cidMap.Count == 0) return html;
+
+        // Replace cid: references in the HTML
+        foreach (var (cid, dataUri) in cidMap)
+        {
+            html = html.Replace($"cid:{cid}", dataUri, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return html;
     }
 
     private static string StripHtmlToText(string html)
