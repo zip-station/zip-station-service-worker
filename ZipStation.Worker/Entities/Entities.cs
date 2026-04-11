@@ -34,6 +34,17 @@ public class ProjectSettings
     public int StaleTicketDays { get; set; } = 5;
     public SpamSettings? Spam { get; set; }
     public ContactFormSettings? ContactForm { get; set; }
+    public FileStorageSettings? FileStorage { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class FileStorageSettings
+{
+    public string KeyId { get; set; } = string.Empty;
+    public string AppKey { get; set; } = string.Empty;
+    public string BucketName { get; set; } = string.Empty;
+    public string Endpoint { get; set; } = string.Empty;
+    public string Region { get; set; } = string.Empty;
 }
 
 [BsonIgnoreExtraElements]
@@ -158,6 +169,17 @@ public class TicketMessage : BaseEntity
     public string? AuthorName { get; set; }
     public string? AuthorEmail { get; set; }
     public int Source { get; set; } = 1; // 0=Customer, 1=Agent, 2=System
+    [BsonIgnoreIfNull]
+    public List<MessageAttachment>? Attachments { get; set; }
+}
+
+public class MessageAttachment
+{
+    public string Id { get; set; } = ObjectId.GenerateNewId().ToString();
+    public string FileName { get; set; } = string.Empty;
+    public string ContentType { get; set; } = string.Empty;
+    public long SizeBytes { get; set; }
+    public string StorageKey { get; set; } = string.Empty;
 }
 
 [BsonIgnoreExtraElements]
