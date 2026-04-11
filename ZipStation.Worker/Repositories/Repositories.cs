@@ -145,6 +145,13 @@ public class TicketMessageRepository
         await _collection.InsertOneAsync(entity);
         return entity;
     }
+
+    public async Task UpdateAsync(TicketMessage entity)
+    {
+        entity.UpdatedOnDateTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        await _collection.ReplaceOneAsync(
+            Builders<TicketMessage>.Filter.Eq(e => e.Id, entity.Id), entity);
+    }
 }
 
 public class CustomerRepository

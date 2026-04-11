@@ -52,6 +52,7 @@ try
     builder.Services.AddSingleton(sp => new TicketIdCounterRepository(sp.GetRequiredService<IMongoDatabase>(), collections.TicketIdCounters));
 
     // Services
+    builder.Services.AddSingleton<FileStorageService>();
     builder.Services.AddSingleton<IEmailPollingService, EmailPollingService>();
 
     // Worker

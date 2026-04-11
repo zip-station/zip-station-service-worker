@@ -25,6 +25,7 @@ public class EmailPollingService : IEmailPollingService
     private readonly TicketMessageRepository _ticketMessageRepository;
     private readonly CustomerRepository _customerRepository;
     private readonly TicketIdCounterRepository _ticketIdCounterRepository;
+    private readonly FileStorageService _fileStorageService;
     private readonly MongoDB.Driver.IMongoDatabase _database;
     private readonly Helpers.AppConfig _appConfig;
     private static readonly HttpClient _webhookClient = new() { Timeout = TimeSpan.FromSeconds(10) };
@@ -38,6 +39,7 @@ public class EmailPollingService : IEmailPollingService
         TicketMessageRepository ticketMessageRepository,
         CustomerRepository customerRepository,
         TicketIdCounterRepository ticketIdCounterRepository,
+        FileStorageService fileStorageService,
         MongoDB.Driver.IMongoDatabase database,
         Microsoft.Extensions.Options.IOptions<Helpers.AppConfig> appConfig)
     {
@@ -49,6 +51,7 @@ public class EmailPollingService : IEmailPollingService
         _ticketMessageRepository = ticketMessageRepository;
         _customerRepository = customerRepository;
         _ticketIdCounterRepository = ticketIdCounterRepository;
+        _fileStorageService = fileStorageService;
         _database = database;
         _appConfig = appConfig.Value;
     }
@@ -270,7 +273,7 @@ public class EmailPollingService : IEmailPollingService
                     intake.Status = 1; // Approved
                     intake.ProcessedOn = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     var created = await _intakeEmailRepository.CreateAsync(intake);
-                    await CreateTicketFromIntakeAsync(project, created);
+                    await CreateTicketFromIntakeAsync(project, created, message);
                     return true;
 
                 case 1: // AutoDeny
@@ -393,11 +396,20 @@ public class EmailPollingService : IEmailPollingService
             Source = 0 // Customer
         };
 
-        await _ticketMessageRepository.CreateAsync(ticketMessage);
+        var created = await _ticketMessageRepository.CreateAsync(ticketMessage);
+
+        // Extract and upload attachments
+        var attachments = await ExtractAndUploadAttachmentsAsync(project, message, existingTicket.Id, created.Id);
+        if (attachments.Count > 0)
+        {
+            created.Attachments = attachments;
+            await _ticketMessageRepository.UpdateAsync(created);
+        }
+
         await _ticketRepository.SetLastMessageSourceAsync(existingTicket.Id, 0); // Customer
 
-        _logger.LogInformation("Threaded reply from {From} to ticket {TicketId}",
-            fromAddress.Address, existingTicket.Id);
+        _logger.LogInformation("Threaded reply from {From} to ticket {TicketId} ({AttachmentCount} attachments)",
+            fromAddress.Address, existingTicket.Id, attachments.Count);
 
         return true;
     }
@@ -465,7 +477,7 @@ public class EmailPollingService : IEmailPollingService
         return null;
     }
 
-    private async Task CreateTicketFromIntakeAsync(Project project, IntakeEmail intake)
+    private async Task CreateTicketFromIntakeAsync(Project project, IntakeEmail intake, MimeMessage? mimeMessage = null)
     {
         // Get or create customer
         var customer = await _customerRepository.GetByEmailAndProjectAsync(intake.FromEmail, project.Id);
@@ -523,7 +535,18 @@ public class EmailPollingService : IEmailPollingService
             Source = 0, // Customer
             CreatedOnDateTime = intake.ReceivedOn > 0 ? intake.ReceivedOn : 0
         };
-        await _ticketMessageRepository.CreateAsync(message);
+        var createdMessage = await _ticketMessageRepository.CreateAsync(message);
+
+        // Extract and upload attachments from the original email
+        if (mimeMessage != null)
+        {
+            var attachments = await ExtractAndUploadAttachmentsAsync(project, mimeMessage, createdTicket.Id, createdMessage.Id);
+            if (attachments.Count > 0)
+            {
+                createdMessage.Attachments = attachments;
+                await _ticketMessageRepository.UpdateAsync(createdMessage);
+            }
+        }
 
         // Update intake with ticket reference
         intake.TicketId = createdTicket.Id;
@@ -793,6 +816,66 @@ public class EmailPollingService : IEmailPollingService
             if (client.IsConnected)
                 await client.DisconnectAsync(true, ct);
         }
+    }
+
+    /// <summary>
+    /// Extracts non-inline attachments from a MIME message and uploads them to B2 storage.
+    /// Returns a list of MessageAttachment objects with storage keys.
+    /// </summary>
+    private async Task<List<Entities.MessageAttachment>> ExtractAndUploadAttachmentsAsync(
+        Entities.Project project, MimeMessage message, string ticketId, string messageId)
+    {
+        var attachments = new List<Entities.MessageAttachment>();
+        var fileStorage = project.Settings?.FileStorage;
+        if (fileStorage == null || string.IsNullOrEmpty(fileStorage.BucketName))
+            return attachments;
+
+        foreach (var part in message.BodyParts)
+        {
+            if (part is not MimePart mimePart) continue;
+
+            // Skip inline images (those are handled by ResolveInlineImages as data URIs)
+            if (mimePart.IsAttachment || (!string.IsNullOrEmpty(mimePart.FileName) && string.IsNullOrEmpty(mimePart.ContentId)))
+            {
+                var fileName = mimePart.FileName ?? $"attachment_{MongoDB.Bson.ObjectId.GenerateNewId()}";
+                var contentType = mimePart.ContentType.MimeType ?? "application/octet-stream";
+
+                try
+                {
+                    using var stream = new MemoryStream();
+                    mimePart.Content.DecodeTo(stream);
+
+                    // Enforce 10MB limit
+                    if (stream.Length > 10 * 1024 * 1024)
+                    {
+                        _logger.LogWarning("Skipping attachment {FileName} ({Size} bytes) — exceeds 10MB limit", fileName, stream.Length);
+                        continue;
+                    }
+
+                    var sizeBytes = stream.Length;
+                    stream.Position = 0;
+                    var storageKey = $"{project.CompanyId}/{project.Id}/{ticketId}/{messageId}/{MongoDB.Bson.ObjectId.GenerateNewId()}_{fileName}";
+                    await _fileStorageService.UploadAsync(fileStorage, storageKey, stream, contentType);
+
+                    attachments.Add(new Entities.MessageAttachment
+                    {
+                        FileName = fileName,
+                        ContentType = contentType,
+                        SizeBytes = sizeBytes,
+                        StorageKey = storageKey
+                    });
+
+                    _logger.LogInformation("Uploaded incoming attachment {FileName} ({Size} bytes) for ticket {TicketId}",
+                        fileName, sizeBytes, ticketId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to upload attachment {FileName} for ticket {TicketId}", fileName, ticketId);
+                }
+            }
+        }
+
+        return attachments;
     }
 
     /// <summary>
