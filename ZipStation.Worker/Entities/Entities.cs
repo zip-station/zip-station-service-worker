@@ -155,6 +155,7 @@ public class Ticket : BaseEntity
     public List<string> Tags { get; set; } = new();
     public int CreationSource { get; set; } = 0;
     public int? LastMessageSource { get; set; } // 0=Customer, 1=Agent, 2=System
+    public bool IsPreserved { get; set; }
 }
 
 public class TicketMessage : BaseEntity

@@ -197,10 +197,11 @@ public class Worker : BackgroundService
                     var staleThresholdDays = project.Settings?.StaleTicketDays > 0 ? project.Settings.StaleTicketDays : 5;
                     var cutoff = DateTimeOffset.UtcNow.AddDays(-staleThresholdDays).ToUnixTimeMilliseconds();
 
-                    // Find open/pending tickets with no activity past the threshold
+                    // Find open/pending tickets with no activity past the threshold, excluding preserved
                     var filter = MongoDB.Driver.Builders<Entities.Ticket>.Filter.Eq(t => t.ProjectId, project.Id)
                                & MongoDB.Driver.Builders<Entities.Ticket>.Filter.In(t => t.Status, new[] { 0, 1 }) // Open, Pending
                                & MongoDB.Driver.Builders<Entities.Ticket>.Filter.Eq(t => t.IsVoid, false)
+                               & MongoDB.Driver.Builders<Entities.Ticket>.Filter.Ne(t => t.IsPreserved, true)
                                & MongoDB.Driver.Builders<Entities.Ticket>.Filter.Lt(t => t.UpdatedOnDateTime, cutoff);
 
                     var staleTickets = await ticketsCollection.Find(filter).ToListAsync(stoppingToken);
