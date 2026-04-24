@@ -854,7 +854,7 @@ public class EmailPollingService : IEmailPollingService
 
                     var sizeBytes = stream.Length;
                     stream.Position = 0;
-                    var storageKey = $"{project.CompanyId}/{project.Id}/{ticketId}/{messageId}/{MongoDB.Bson.ObjectId.GenerateNewId()}_{fileName}";
+                    var storageKey = $"{project.CompanyId}/{project.Id}/email-attachments/{ticketId}/{messageId}/{MongoDB.Bson.ObjectId.GenerateNewId()}_{fileName}";
                     await _fileStorageService.UploadAsync(fileStorage, storageKey, stream, contentType);
 
                     attachments.Add(new Entities.MessageAttachment
