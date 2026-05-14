@@ -26,4 +26,9 @@ public class ZipStationMongoDbCollections
     public string TicketIdCounters { get; set; } = "ticketIdCounters";
     public string WorkerTriggers { get; set; } = "workerTriggers";
     public string Alerts { get; set; } = "alerts";
+    public string MaxInstructions { get; set; } = "maxInstructions";
+    public string MaxExampleReplies { get; set; } = "maxExampleReplies";
+    public string MaxTasks { get; set; } = "maxTasks";
+    public string MaxQuestions { get; set; } = "maxQuestions";
+    public string MaxTicketEnrichments { get; set; } = "maxTicketEnrichments";
 }

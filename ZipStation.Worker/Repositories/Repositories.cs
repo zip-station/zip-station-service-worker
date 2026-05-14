@@ -15,6 +15,13 @@ public class ProjectRepository
                    & Builders<Project>.Filter.Ne(p => p.Settings.Imap, null);
         return await _collection.Find(filter).ToListAsync();
     }
+
+    public async Task<Project?> GetByIdAsync(string id)
+    {
+        var filter = Builders<Project>.Filter.Eq(p => p.Id, id)
+                   & Builders<Project>.Filter.Eq(p => p.IsVoid, false);
+        return await _collection.Find(filter).FirstOrDefaultAsync();
+    }
 }
 
 public class IntakeEmailRepository
@@ -127,6 +134,18 @@ public class TicketRepository
                    & Builders<Ticket>.Filter.Eq(t => t.TicketNumber, ticketNumber);
         return await _collection.CountDocumentsAsync(filter) > 0;
     }
+
+    public async Task<List<Ticket>> GetRecentOpenByProjectIdAsync(string projectId, int limit, string excludeTicketId)
+    {
+        var filter = Builders<Ticket>.Filter.Eq(t => t.ProjectId, projectId)
+                   & Builders<Ticket>.Filter.Eq(t => t.IsVoid, false)
+                   & Builders<Ticket>.Filter.In(t => t.Status, new[] { 0, 1 })
+                   & Builders<Ticket>.Filter.Ne(t => t.Id, excludeTicketId);
+        return await _collection.Find(filter)
+            .SortByDescending(t => t.UpdatedOnDateTime)
+            .Limit(limit)
+            .ToListAsync();
+    }
 }
 
 public class TicketMessageRepository
@@ -151,6 +170,15 @@ public class TicketMessageRepository
         entity.UpdatedOnDateTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         await _collection.ReplaceOneAsync(
             Builders<TicketMessage>.Filter.Eq(e => e.Id, entity.Id), entity);
+    }
+
+    public async Task<List<TicketMessage>> GetByTicketIdAsync(string ticketId)
+    {
+        var filter = Builders<TicketMessage>.Filter.Eq(m => m.TicketId, ticketId)
+                   & Builders<TicketMessage>.Filter.Eq(m => m.IsVoid, false);
+        return await _collection.Find(filter)
+            .SortBy(m => m.CreatedOnDateTime)
+            .ToListAsync();
     }
 }
 
@@ -202,5 +230,125 @@ public class TicketIdCounterRepository
         };
         var result = await _collection.FindOneAndUpdateAsync(filter, update, options);
         return result.CurrentValue;
+    }
+}
+
+public class MaxInstructionRepository
+{
+    private readonly IMongoCollection<MaxInstruction> _collection;
+    public MaxInstructionRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<MaxInstruction>(collectionName);
+
+    public async Task<List<MaxInstruction>> GetByProjectIdAsync(string projectId)
+    {
+        var filter = Builders<MaxInstruction>.Filter.Eq(i => i.ProjectId, projectId)
+                   & Builders<MaxInstruction>.Filter.Eq(i => i.IsVoid, false);
+        return await _collection.Find(filter).ToListAsync();
+    }
+}
+
+public class MaxExampleReplyRepository
+{
+    private readonly IMongoCollection<MaxExampleReply> _collection;
+    public MaxExampleReplyRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<MaxExampleReply>(collectionName);
+
+    public async Task<List<MaxExampleReply>> GetByProjectIdAsync(string projectId)
+    {
+        var filter = Builders<MaxExampleReply>.Filter.Eq(r => r.ProjectId, projectId)
+                   & Builders<MaxExampleReply>.Filter.Eq(r => r.IsVoid, false);
+        return await _collection.Find(filter).ToListAsync();
+    }
+}
+
+public class MaxTicketEnrichmentRepository
+{
+    private readonly IMongoCollection<MaxTicketEnrichment> _collection;
+    public MaxTicketEnrichmentRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<MaxTicketEnrichment>(collectionName);
+
+    public async Task<MaxTicketEnrichment?> GetByTicketIdAsync(string ticketId)
+    {
+        var filter = Builders<MaxTicketEnrichment>.Filter.Eq(e => e.TicketId, ticketId)
+                   & Builders<MaxTicketEnrichment>.Filter.Eq(e => e.IsVoid, false);
+        return await _collection.Find(filter).FirstOrDefaultAsync();
+    }
+
+    public async Task<List<MaxTicketEnrichment>> GetRecentByProjectIdAsync(string projectId, int limit)
+    {
+        var filter = Builders<MaxTicketEnrichment>.Filter.Eq(e => e.ProjectId, projectId)
+                   & Builders<MaxTicketEnrichment>.Filter.Eq(e => e.IsVoid, false);
+        return await _collection.Find(filter)
+            .SortByDescending(e => e.CreatedOnDateTime)
+            .Limit(limit)
+            .ToListAsync();
+    }
+
+    public async Task<MaxTicketEnrichment> UpsertAsync(MaxTicketEnrichment entity)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        entity.UpdatedOnDateTime = now;
+        if (entity.CreatedOnDateTime == 0) entity.CreatedOnDateTime = now;
+
+        if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
+        var filter = Builders<MaxTicketEnrichment>.Filter.Eq(e => e.TicketId, entity.TicketId);
+        var options = new ReplaceOptions { IsUpsert = true };
+        await _collection.ReplaceOneAsync(filter, entity, options);
+        return entity;
+    }
+}
+
+public class MaxTaskRepository
+{
+    private readonly IMongoCollection<MaxTask> _collection;
+    public MaxTaskRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<MaxTask>(collectionName);
+
+    public async Task<MaxTask> CreateAsync(MaxTask entity)
+    {
+        if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        entity.CreatedOnDateTime = now;
+        entity.UpdatedOnDateTime = now;
+        entity.IsVoid = false;
+        await _collection.InsertOneAsync(entity);
+        return entity;
+    }
+
+    public async Task<long> SoftDeletePendingByTicketIdAsync(string ticketId)
+    {
+        var filter = Builders<MaxTask>.Filter.Eq(t => t.TicketId, ticketId)
+                   & Builders<MaxTask>.Filter.Eq(t => t.Status, "pending")
+                   & Builders<MaxTask>.Filter.Eq(t => t.IsVoid, false);
+        var update = Builders<MaxTask>.Update
+            .Set(t => t.IsVoid, true)
+            .Set(t => t.UpdatedOnDateTime, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var result = await _collection.UpdateManyAsync(filter, update);
+        return result.ModifiedCount;
+    }
+}
+
+public class MaxQuestionRepository
+{
+    private readonly IMongoCollection<MaxQuestion> _collection;
+    public MaxQuestionRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<MaxQuestion>(collectionName);
+
+    public async Task<MaxQuestion> CreateAsync(MaxQuestion entity)
+    {
+        if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        entity.CreatedOnDateTime = now;
+        entity.UpdatedOnDateTime = now;
+        entity.IsVoid = false;
+        await _collection.InsertOneAsync(entity);
+        return entity;
+    }
+
+    public async Task<long> SoftDeletePendingByTicketIdAsync(string ticketId)
+    {
+        var filter = Builders<MaxQuestion>.Filter.Eq(q => q.SourceTicketId, ticketId)
+                   & Builders<MaxQuestion>.Filter.Eq(q => q.Status, "pending")
+                   & Builders<MaxQuestion>.Filter.Eq(q => q.IsVoid, false);
+        var update = Builders<MaxQuestion>.Update
+            .Set(q => q.IsVoid, true)
+            .Set(q => q.UpdatedOnDateTime, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var result = await _collection.UpdateManyAsync(filter, update);
+        return result.ModifiedCount;
     }
 }

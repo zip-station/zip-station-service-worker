@@ -50,10 +50,16 @@ try
     builder.Services.AddSingleton(sp => new TicketMessageRepository(sp.GetRequiredService<IMongoDatabase>(), collections.TicketMessages));
     builder.Services.AddSingleton(sp => new CustomerRepository(sp.GetRequiredService<IMongoDatabase>(), collections.Customers));
     builder.Services.AddSingleton(sp => new TicketIdCounterRepository(sp.GetRequiredService<IMongoDatabase>(), collections.TicketIdCounters));
+    builder.Services.AddSingleton(sp => new MaxInstructionRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxInstructions));
+    builder.Services.AddSingleton(sp => new MaxExampleReplyRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxExampleReplies));
+    builder.Services.AddSingleton(sp => new MaxTicketEnrichmentRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxTicketEnrichments));
+    builder.Services.AddSingleton(sp => new MaxTaskRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxTasks));
+    builder.Services.AddSingleton(sp => new MaxQuestionRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxQuestions));
 
     // Services
     builder.Services.AddSingleton<FileStorageService>();
     builder.Services.AddSingleton<IEmailPollingService, EmailPollingService>();
+    builder.Services.AddSingleton<IMaxEnrichmentService, MaxEnrichmentService>();
 
     // Worker
     builder.Services.AddHostedService<Worker>();

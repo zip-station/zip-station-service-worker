@@ -35,6 +35,21 @@ public class ProjectSettings
     public SpamSettings? Spam { get; set; }
     public ContactFormSettings? ContactForm { get; set; }
     public FileStorageSettings? FileStorage { get; set; }
+    public MaxSettings? Max { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class MaxSettings
+{
+    public bool Enabled { get; set; }
+    public string ApiKeyEncrypted { get; set; } = string.Empty;
+    public string Model { get; set; } = "claude-sonnet-4-6";
+    public string? ProjectContext { get; set; }
+    public string? ToneGuide { get; set; }
+    public string? ToneAvoid { get; set; }
+    public bool AutoSendEnabled { get; set; }
+    public double AutoSendThreshold { get; set; } = 0.95;
+    public List<string> AutoSendCategories { get; set; } = new() { "billing" };
 }
 
 [BsonIgnoreExtraElements]
@@ -220,4 +235,88 @@ public class TicketIdCounter
     [BsonElement("_id")]
     public string ProjectId { get; set; } = string.Empty;
     public long CurrentValue { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class MaxInstruction : BaseEntity
+{
+    public string CompanyId { get; set; } = string.Empty;
+    public string ProjectId { get; set; } = string.Empty;
+    public string Instruction { get; set; } = string.Empty;
+    public List<string> Contexts { get; set; } = new();
+    public string Source { get; set; } = "manual";
+}
+
+[BsonIgnoreExtraElements]
+public class MaxExampleReply : BaseEntity
+{
+    public string CompanyId { get; set; } = string.Empty;
+    public string ProjectId { get; set; } = string.Empty;
+    public string ReplyText { get; set; } = string.Empty;
+    public string? SourceTicketId { get; set; }
+    public string? Notes { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class MaxTask : BaseEntity
+{
+    public string CompanyId { get; set; } = string.Empty;
+    public string ProjectId { get; set; } = string.Empty;
+    public string TicketId { get; set; } = string.Empty;
+    public string Type { get; set; } = string.Empty;
+    public string Status { get; set; } = "pending";
+    public double Confidence { get; set; }
+    public MaxTaskDetails Details { get; set; } = new();
+    public string? ApprovedByUserId { get; set; }
+    public long? ResolvedOnDateTime { get; set; }
+    public string? FailureReason { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class MaxTaskDetails
+{
+    public string? Draft { get; set; }
+    public string? Notes { get; set; }
+    public string? DuplicateOfTicketId { get; set; }
+    public string? SuggestedTitle { get; set; }
+    public string? SuggestedKanbanType { get; set; }
+    public string? QuestionId { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class MaxQuestion : BaseEntity
+{
+    public string CompanyId { get; set; } = string.Empty;
+    public string ProjectId { get; set; } = string.Empty;
+    public string? SourceTicketId { get; set; }
+    public string Question { get; set; } = string.Empty;
+    public string? ContextExcerpt { get; set; }
+    public string Status { get; set; } = "pending";
+    public string? Answer { get; set; }
+    public bool PromotedToContext { get; set; }
+    public long? AnsweredOnDateTime { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class MaxTicketEnrichment : BaseEntity
+{
+    public string CompanyId { get; set; } = string.Empty;
+    public string ProjectId { get; set; } = string.Empty;
+    public string TicketId { get; set; } = string.Empty;
+    public string Status { get; set; } = "complete";
+    public string Category { get; set; } = "unsure";
+    public string Summary { get; set; } = string.Empty;
+    public double Confidence { get; set; }
+    public string? DuplicateOfTicketId { get; set; }
+    public List<string> RelatedTicketIds { get; set; } = new();
+    public string Platform { get; set; } = "unknown";
+    public List<string> Tags { get; set; } = new();
+    public string SuggestedActionType { get; set; } = "no_action";
+    public string? SuggestedDraft { get; set; }
+    public string? SuggestedNotes { get; set; }
+    public string? Reasoning { get; set; }
+    public bool FlaggedQuestion { get; set; }
+    public string? QuestionId { get; set; }
+    public string Model { get; set; } = string.Empty;
+    public string? RawResponse { get; set; }
 }

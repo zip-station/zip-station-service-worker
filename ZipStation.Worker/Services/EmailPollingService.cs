@@ -28,6 +28,7 @@ public class EmailPollingService : IEmailPollingService
     private readonly FileStorageService _fileStorageService;
     private readonly MongoDB.Driver.IMongoDatabase _database;
     private readonly Helpers.AppConfig _appConfig;
+    private readonly IMaxEnrichmentService _maxEnrichmentService;
     private static readonly HttpClient _webhookClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     public EmailPollingService(
@@ -41,7 +42,8 @@ public class EmailPollingService : IEmailPollingService
         TicketIdCounterRepository ticketIdCounterRepository,
         FileStorageService fileStorageService,
         MongoDB.Driver.IMongoDatabase database,
-        Microsoft.Extensions.Options.IOptions<Helpers.AppConfig> appConfig)
+        Microsoft.Extensions.Options.IOptions<Helpers.AppConfig> appConfig,
+        IMaxEnrichmentService maxEnrichmentService)
     {
         _logger = logger;
         _projectRepository = projectRepository;
@@ -54,6 +56,17 @@ public class EmailPollingService : IEmailPollingService
         _fileStorageService = fileStorageService;
         _database = database;
         _appConfig = appConfig.Value;
+        _maxEnrichmentService = maxEnrichmentService;
+    }
+
+    /// <summary>
+    /// Kick off Max enrichment for a ticket without blocking the polling loop.
+    /// EnrichTicketAsync swallows its own exceptions and respects the cancellation token;
+    /// this fire-and-forget pattern keeps intake responsive even if Anthropic is slow.
+    /// </summary>
+    private void FireEnrichment(string ticketId, CancellationToken ct)
+    {
+        _ = Task.Run(() => _maxEnrichmentService.EnrichTicketAsync(ticketId, ct), ct);
     }
 
     public async Task PollAllProjectsAsync(CancellationToken ct)
@@ -273,7 +286,7 @@ public class EmailPollingService : IEmailPollingService
                     intake.Status = 1; // Approved
                     intake.ProcessedOn = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                     var created = await _intakeEmailRepository.CreateAsync(intake);
-                    await CreateTicketFromIntakeAsync(project, created, message);
+                    await CreateTicketFromIntakeAsync(project, created, message, ct);
                     return true;
 
                 case 1: // AutoDeny
@@ -411,6 +424,8 @@ public class EmailPollingService : IEmailPollingService
         _logger.LogInformation("Threaded reply from {From} to ticket {TicketId} ({AttachmentCount} attachments)",
             fromAddress.Address, existingTicket.Id, attachments.Count);
 
+        FireEnrichment(existingTicket.Id, ct);
+
         return true;
     }
 
@@ -477,7 +492,7 @@ public class EmailPollingService : IEmailPollingService
         return null;
     }
 
-    private async Task CreateTicketFromIntakeAsync(Project project, IntakeEmail intake, MimeMessage? mimeMessage = null)
+    private async Task CreateTicketFromIntakeAsync(Project project, IntakeEmail intake, MimeMessage? mimeMessage = null, CancellationToken ct = default)
     {
         // Get or create customer
         var customer = await _customerRepository.GetByEmailAndProjectAsync(intake.FromEmail, project.Id);
@@ -562,6 +577,8 @@ public class EmailPollingService : IEmailPollingService
 
         _logger.LogInformation("Auto-approved intake created ticket {TicketId} for {Email}",
             createdTicket.Id, intake.FromEmail);
+
+        FireEnrichment(createdTicket.Id, ct);
     }
 
     private static IntakeRule? MatchIntakeRule(IntakeEmail intake, List<IntakeRule> rules)
