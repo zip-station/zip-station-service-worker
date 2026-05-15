@@ -221,7 +221,7 @@ public class Alert
     [BsonRepresentation(BsonType.String)]
     public string Id { get; set; } = ObjectId.GenerateNewId().ToString();
     public string ProjectId { get; set; } = string.Empty;
-    public int TriggerType { get; set; } // 0=NewTicket
+    public int TriggerType { get; set; } // 0=NewTicket, 6=CustomerReply
     public string? TriggerValue { get; set; }
     public int ChannelType { get; set; } // 0=Slack, 1=Discord, 2=Generic
     public string WebhookUrl { get; set; } = string.Empty;

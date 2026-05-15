@@ -424,6 +424,8 @@ public class EmailPollingService : IEmailPollingService
         _logger.LogInformation("Threaded reply from {From} to ticket {TicketId} ({AttachmentCount} attachments)",
             fromAddress.Address, existingTicket.Id, attachments.Count);
 
+        await FireAlertsForCustomerReplyAsync(project, existingTicket, fromAddress.Address);
+
         FireEnrichment(existingTicket.Id, ct);
 
         return true;
@@ -948,6 +950,64 @@ public class EmailPollingService : IEmailPollingService
         // Normalize whitespace per line
         var lines = text.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0);
         return string.Join("\n", lines);
+    }
+
+    private async Task FireAlertsForCustomerReplyAsync(Entities.Project project, Entities.Ticket ticket, string fromEmail)
+    {
+        try
+        {
+            var alertsCollection = _database.GetCollection<Entities.Alert>(_appConfig.ZipStationMongoDb.Collections.Alerts);
+            var filter = MongoDB.Driver.Builders<Entities.Alert>.Filter.Eq(a => a.ProjectId, project.Id)
+                       & MongoDB.Driver.Builders<Entities.Alert>.Filter.Eq(a => a.TriggerType, 6) // CustomerReply
+                       & MongoDB.Driver.Builders<Entities.Alert>.Filter.Eq(a => a.IsEnabled, true)
+                       & MongoDB.Driver.Builders<Entities.Alert>.Filter.Eq(a => a.IsVoid, false);
+            var alerts = await alertsCollection.Find(filter).ToListAsync();
+
+            foreach (var alert in alerts)
+            {
+                try
+                {
+                    var message = $"[{project.Name}] Reply from {fromEmail} on ticket: {ticket.Subject}";
+                    string payload;
+
+                    switch (alert.ChannelType)
+                    {
+                        case 0: // Slack
+                            payload = System.Text.Json.JsonSerializer.Serialize(new { text = message });
+                            break;
+                        case 1: // Discord
+                            payload = System.Text.Json.JsonSerializer.Serialize(new { content = message });
+                            break;
+                        default: // Generic
+                            payload = System.Text.Json.JsonSerializer.Serialize(new
+                            {
+                                @event = "customer_reply",
+                                ticketId = ticket.Id,
+                                subject = ticket.Subject,
+                                customerEmail = fromEmail,
+                                projectName = project.Name
+                            });
+                            break;
+                    }
+
+                    var content = new System.Net.Http.StringContent(payload, System.Text.Encoding.UTF8, "application/json");
+                    var response = await _webhookClient.PostAsync(alert.WebhookUrl, content);
+
+                    if (response.IsSuccessStatusCode)
+                        _logger.LogInformation("Worker reply alert fired: {AlertId} for ticket {TicketId}", alert.Id, ticket.Id);
+                    else
+                        _logger.LogWarning("Worker reply alert webhook returned {StatusCode} for {AlertId}", response.StatusCode, alert.Id);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Worker reply alert failed for {AlertId}", alert.Id);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error firing worker reply alerts for project {ProjectId}", project.Id);
+        }
     }
 
     private async Task FireAlertsForNewTicketAsync(Entities.Project project, Entities.Ticket ticket)
