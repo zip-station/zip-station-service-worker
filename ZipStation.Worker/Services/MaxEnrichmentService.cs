@@ -163,7 +163,7 @@ public class MaxEnrichmentService : IMaxEnrichmentService
 
             await _enrichmentRepository.UpsertAsync(enrichment);
 
-            await CreateTaskIfNeededAsync(ticket, enrichment, parsed);
+            await CreateTasksFromParsedAsync(ticket, enrichment, parsed);
 
             _logger.LogInformation(
                 "Max enriched ticket {TicketId}: category={Category} confidence={Confidence:F2} action={Action}",
@@ -211,34 +211,55 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         catch (Exception ex) { _logger.LogWarning(ex, "Failed to write enrichment status {Status} for ticket {TicketId}", status, ticket.Id); }
     }
 
-    private async Task CreateTaskIfNeededAsync(Ticket ticket, MaxTicketEnrichment enrichment, ParsedEnrichment parsed)
+    private async Task CreateTasksFromParsedAsync(Ticket ticket, MaxTicketEnrichment enrichment, ParsedEnrichment parsed)
     {
-        var actionType = parsed.SuggestedAction?.Type ?? "no_action";
+        await CreateTaskFromActionAsync(ticket, enrichment, parsed.SuggestedAction, isPrimary: true);
+        if (parsed.AdditionalActions != null)
+        {
+            foreach (var action in parsed.AdditionalActions)
+            {
+                if (action?.Type == parsed.SuggestedAction?.Type) continue;
+                await CreateTaskFromActionAsync(ticket, enrichment, action, isPrimary: false);
+            }
+        }
+    }
+
+    private async Task CreateTaskFromActionAsync(Ticket ticket, MaxTicketEnrichment enrichment, ParsedSuggestedAction? action, bool isPrimary)
+    {
+        var actionType = action?.Type ?? "no_action";
         if (actionType == "no_action") return;
 
         var details = new MaxTaskDetails();
         switch (actionType)
         {
             case "draft_reply":
-                details.Draft = parsed.SuggestedAction?.Draft;
-                details.Notes = parsed.SuggestedAction?.Notes;
+                details.Draft = action?.Draft;
+                details.Notes = action?.Notes;
                 break;
             case "merge_duplicate":
                 details.DuplicateOfTicketId = enrichment.DuplicateOfTicketId;
-                details.Notes = parsed.SuggestedAction?.Notes;
+                details.Notes = action?.Notes;
                 break;
             case "add_to_backlog":
-                details.SuggestedTitle = enrichment.Summary;
+                details.SuggestedTitle = !string.IsNullOrWhiteSpace(action?.Notes) ? action.Notes : enrichment.Summary;
                 details.SuggestedKanbanType = MapCategoryToKanbanType(enrichment.Category);
-                details.Notes = parsed.SuggestedAction?.Notes;
+                details.Notes = action?.Notes;
+                break;
+            case "link_to_story":
+                // Worker doesn't have kanban repos, so we can't look up the card
+                // title here. Store the number; the SPA reads card details when
+                // rendering the task card.
+                if (action?.CardNumber == null) return;
+                details.LinkToStoryCardNumber = action.CardNumber;
+                details.Notes = action?.Notes;
                 break;
             case "escalated":
             case "investigate":
-                details.Notes = parsed.SuggestedAction?.Notes;
+                details.Notes = action?.Notes;
                 break;
         }
 
-        if (enrichment.FlaggedQuestion && !string.IsNullOrEmpty(enrichment.QuestionId))
+        if (isPrimary && enrichment.FlaggedQuestion && !string.IsNullOrEmpty(enrichment.QuestionId))
             details.QuestionId = enrichment.QuestionId;
 
         var task = new MaxTask
@@ -355,17 +376,56 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         sb.AppendLine("One sentence, max 140 chars, written for the maintainer. State the issue, not the user's framing. Drop pleasantries.");
         sb.AppendLine();
 
-        sb.AppendLine("## Duplicate detection");
-        sb.AppendLine("Compare against open_issues. Set duplicate_of to an existing id ONLY if fixing the existing issue would resolve this one. When unsure, leave null and use related_ids instead.");
+        sb.AppendLine("## Duplicate detection vs linking");
+        sb.AppendLine("Set `duplicate_of` ONLY when the SAME customer (same email address) opened multiple tickets about the same issue. A merge collapses one ticket into another; that only makes sense when there's one conversation that got split.");
+        sb.AppendLine();
+        sb.AppendLine("When DIFFERENT customers report the same underlying issue:");
+        sb.AppendLine("- Add the related ticket ids to `related_ids` to surface the connection");
+        sb.AppendLine("- Leave `duplicate_of` null");
+        sb.AppendLine("- Pick `draft_reply` (or `investigate` for bugs) as the suggested_action — each customer still needs their own reply");
+        sb.AppendLine("- In the suggested_action.notes, mention the pattern (e.g., \"3 customers have reported this in the past week — consider adding to backlog\")");
+        sb.AppendLine();
+        sb.AppendLine("Never use `merge_duplicate` across different customer emails. Merging would lose one customer's conversation.");
+        sb.AppendLine("When unsure between duplicate and related, default to related — false duplicates destroy real signal.");
         sb.AppendLine();
 
         sb.AppendLine("## Suggested action types");
         sb.AppendLine("- draft_reply: you can write a useful response. Include the draft.");
         sb.AppendLine("- investigate: bug needing maintainer's eyes on code. Include investigation hints in notes.");
-        sb.AppendLine("- merge_duplicate: duplicate_of is set; send a thanks/tracked-here ack.");
-        sb.AppendLine("- add_to_backlog: feature request worth tracking. Include a kanban-suitable title in notes.");
+        sb.AppendLine("- merge_duplicate: `duplicate_of` is set AND the customer emails match. Send a thanks/tracked-here ack.");
+        sb.AppendLine("- add_to_backlog: feature request worth tracking, OR a recurring bug pattern that has NO existing kanban story. Include a kanban-suitable title in notes.");
+        sb.AppendLine("- link_to_story: an existing non-Done kanban story in `<available_stories>` already covers this issue. Set `card_number` to the matching story's cardNumber. Prefer this over add_to_backlog whenever a matching story exists.");
         sb.AppendLine("- no_action: spam, off-topic, or feedback that needs no response.");
         sb.AppendLine("- escalated: ambiguous, emotionally charged, legal/safety/refund disputes, or confidence below 0.5.");
+        sb.AppendLine();
+
+        sb.AppendLine("## Additional actions");
+        sb.AppendLine("A single ticket can warrant more than one thing. The PRIMARY suggested_action is the most user-facing thing (usually replying to the customer). In `additional_actions`, you can include extra actions the maintainer should also consider — currently this is most useful for `add_to_backlog` when a bug or feature request also deserves a tracking story.");
+        sb.AppendLine();
+        sb.AppendLine("Use additional_actions when:");
+        sb.AppendLine("- Primary action is draft_reply or investigate AND the ticket describes a bug that needs a code fix or a feature request worth tracking. Pick ONE of:");
+        sb.AppendLine("  - `link_to_story` with `card_number` set to a matching non-Done story in `<available_stories>` (preferred if a match exists)");
+        sb.AppendLine("  - `add_to_backlog` with a kanban-suitable title in notes (only if no matching open story exists)");
+        sb.AppendLine("- Don't duplicate the primary action in additional_actions");
+        sb.AppendLine("- If primary is already add_to_backlog, link_to_story, merge_duplicate, no_action, or escalated, leave additional_actions empty");
+        sb.AppendLine();
+
+        sb.AppendLine("## Use existing kanban stories before creating new ones");
+        sb.AppendLine("Three sources of kanban context matter:");
+        sb.AppendLine("1. `<existing_links>` — kanban stories ALREADY linked to the current ticket.");
+        sb.AppendLine("2. Each `<open_issues>` item has `linked_stories` — stories already linked to OTHER recent tickets.");
+        sb.AppendLine("3. `<available_stories>` — every non-Done kanban story in the project, whether or not it's linked to anything.");
+        sb.AppendLine();
+        sb.AppendLine("Decision order when the ticket describes a bug or feature request:");
+        sb.AppendLine("a) If the current ticket already has a non-Done story in `existing_links` that covers it → don't suggest anything new. Mention the existing story in reasoning.");
+        sb.AppendLine("b) Otherwise, scan `available_stories` for a non-Done story whose title/type clearly matches this ticket's issue → suggest `link_to_story` with that story's `card_number`. This is the most common case after the project has been running for a while.");
+        sb.AppendLine("c) Only if no matching story exists anywhere → suggest `add_to_backlog` with a kanban-suitable title.");
+        sb.AppendLine();
+        sb.AppendLine("Other rules:");
+        sb.AppendLine("- You MAY suggest `add_to_backlog` if all matching stories have `is_done: true` and the issue has resurfaced — note that in your reasoning.");
+        sb.AppendLine("- Do NOT include ticket ids in `related_ids` if they are already in `linked_ticket_ids`.");
+        sb.AppendLine("- When you mention an existing story in your reasoning or notes, use the `STR-N` format.");
+        sb.AppendLine("- Don't enumerate candidate stories you considered and rejected. Only mention stories you're recommending action on (or that are already linked). The maintainer doesn't need to see your scratch work.");
         sb.AppendLine();
 
         sb.AppendLine("## Reply drafting");
@@ -396,10 +456,14 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         sb.AppendLine("  \"platform\": \"ios | android | web | unknown\",");
         sb.AppendLine("  \"tags\": [],");
         sb.AppendLine("  \"suggested_action\": {");
-        sb.AppendLine("    \"type\": \"draft_reply | investigate | merge_duplicate | add_to_backlog | no_action | escalated\",");
+        sb.AppendLine("    \"type\": \"draft_reply | investigate | merge_duplicate | add_to_backlog | link_to_story | no_action | escalated\",");
         sb.AppendLine("    \"draft\": null,");
-        sb.AppendLine("    \"notes\": null");
+        sb.AppendLine("    \"notes\": null,");
+        sb.AppendLine("    \"card_number\": null");
         sb.AppendLine("  },");
+        sb.AppendLine("  \"additional_actions\": [");
+        sb.AppendLine("    { \"type\": \"link_to_story\", \"card_number\": 6, \"notes\": \"Story STR-6 already tracks this bug\" }");
+        sb.AppendLine("  ],");
         sb.AppendLine("  \"flag_question\": false,");
         sb.AppendLine("  \"question_for_maintainer\": null,");
         sb.AppendLine("  \"question_context_excerpt\": null,");
@@ -419,16 +483,41 @@ public class MaxEnrichmentService : IMaxEnrichmentService
                 id = t.Id,
                 ticketNumber = t.TicketNumber,
                 subject = t.Subject,
+                customerEmail = t.CustomerEmail,
                 category = e?.Category,
                 summary = e?.Summary,
                 tags = e?.Tags ?? new List<string>(),
+                // Worker doesn't have kanban repos. The API enrichment path (manual
+                // re-enrich, intake/ticket creation) populates this; here we emit
+                // an empty array so the prompt schema stays consistent.
+                linked_stories = new List<object>(),
             };
         }).ToList();
+
+        // Worker only enriches brand-new tickets that don't have existing links
+        // yet. We still emit the block so the system prompt's existing-links
+        // rules apply consistently across API and worker enrichment.
+        var existingLinksPayload = new
+        {
+            linked_ticket_ids = new List<string>(),
+            linked_stories = new List<object>(),
+        };
 
         var sb = new StringBuilder();
         sb.AppendLine("<open_issues>");
         sb.AppendLine(JsonSerializer.Serialize(openIssuesPayload, new JsonSerializerOptions { WriteIndented = false }));
         sb.AppendLine("</open_issues>");
+        sb.AppendLine();
+        sb.AppendLine("<existing_links>");
+        sb.AppendLine(JsonSerializer.Serialize(existingLinksPayload, new JsonSerializerOptions { WriteIndented = false }));
+        sb.AppendLine("</existing_links>");
+        sb.AppendLine();
+        // Worker has no kanban repos. Maintainer-driven manual re-enrich uses
+        // the API path, which populates the real list; we send empty here so
+        // the prompt schema stays consistent across both code paths.
+        sb.AppendLine("<available_stories>");
+        sb.AppendLine("[]");
+        sb.AppendLine("</available_stories>");
         sb.AppendLine();
         sb.AppendLine("<ticket>");
         sb.AppendLine($"Source: {ticket.CreationSource}");
@@ -517,6 +606,7 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         public string? Platform { get; set; }
         public List<string>? Tags { get; set; }
         public ParsedSuggestedAction? SuggestedAction { get; set; }
+        public List<ParsedSuggestedAction>? AdditionalActions { get; set; }
         public bool FlagQuestion { get; set; }
         public string? QuestionForMaintainer { get; set; }
         public string? QuestionContextExcerpt { get; set; }
@@ -528,5 +618,6 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         public string? Type { get; set; }
         public string? Draft { get; set; }
         public string? Notes { get; set; }
+        public long? CardNumber { get; set; }
     }
 }

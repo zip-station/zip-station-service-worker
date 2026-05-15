@@ -281,6 +281,8 @@ public class MaxTaskDetails
     public string? SuggestedTitle { get; set; }
     public string? SuggestedKanbanType { get; set; }
     public string? QuestionId { get; set; }
+    public long? LinkToStoryCardNumber { get; set; }
+    public string? LinkToStoryTitle { get; set; }
 }
 
 [BsonIgnoreExtraElements]
