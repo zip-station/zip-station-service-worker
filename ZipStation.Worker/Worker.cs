@@ -9,17 +9,20 @@ public class Worker : BackgroundService
 {
     private readonly ILogger<Worker> _logger;
     private readonly IEmailPollingService _emailPollingService;
+    private readonly IDiscordPollingService _discordPollingService;
     private readonly IMongoDatabase _database;
     private readonly AppConfig _appConfig;
 
     public Worker(
         ILogger<Worker> logger,
         IEmailPollingService emailPollingService,
+        IDiscordPollingService discordPollingService,
         IMongoDatabase database,
         Microsoft.Extensions.Options.IOptions<AppConfig> appConfig)
     {
         _logger = logger;
         _emailPollingService = emailPollingService;
+        _discordPollingService = discordPollingService;
         _database = database;
         _appConfig = appConfig.Value;
     }
@@ -35,6 +38,7 @@ public class Worker : BackgroundService
                 var processes = new List<Task>
                 {
                     PollEmailsAsync(stoppingToken),
+                    PollDiscordAsync(stoppingToken),
                     MonitorAlertsAsync(stoppingToken),
                     ComputeResponseTimeStatsAsync(stoppingToken),
                     CleanupAbandonedTicketsAsync(stoppingToken)
@@ -126,6 +130,70 @@ public class Worker : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in email polling loop");
+                await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
+            }
+        }
+    }
+
+    private async Task PollDiscordAsync(CancellationToken stoppingToken)
+    {
+        // Slight stagger from email poll so the two don't both bang Mongo at second 0.
+        await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
+
+        var triggersCollection = _database.GetCollection<BsonDocument>(
+            _appConfig.ZipStationMongoDb.Collections.WorkerTriggers);
+
+        // Initial poll at startup so projects aren't waiting 60s for their first sync.
+        try { await _discordPollingService.PollAllProjectsAsync(stoppingToken); }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
+        catch (Exception ex) { _logger.LogError(ex, "Initial Discord poll failed"); }
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                // Wait up to 60s for either the timeout or a manual sync-now trigger.
+                // Exactly one poll runs per outer iteration: either the trigger's specific project,
+                // or all projects on natural cadence. The previous loop polled at the top AND on
+                // trigger which made every sync-now fire twice.
+                string? triggeredProjectId = null;
+                bool triggered = false;
+                var waited = TimeSpan.Zero;
+                var pollInterval = TimeSpan.FromSeconds(60);
+                var checkInterval = TimeSpan.FromSeconds(5);
+
+                while (waited < pollInterval && !stoppingToken.IsCancellationRequested)
+                {
+                    var trigger = await triggersCollection.FindOneAndDeleteAsync(
+                        new BsonDocument("type", "poll-discord"),
+                        cancellationToken: stoppingToken);
+                    if (trigger != null)
+                    {
+                        triggeredProjectId = trigger.GetValue("projectId", BsonNull.Value)?.AsString;
+                        triggered = true;
+                        _logger.LogInformation("Discord sync trigger received{Scope}", triggeredProjectId is null ? "" : $" (project {triggeredProjectId})");
+                        break;
+                    }
+
+                    await Task.Delay(checkInterval, stoppingToken);
+                    waited += checkInterval;
+                }
+
+                if (triggered && !string.IsNullOrEmpty(triggeredProjectId))
+                {
+                    await _discordPollingService.PollProjectAsync(triggeredProjectId, stoppingToken);
+                }
+                else
+                {
+                    // Either the 60s tick fired, or the trigger was unscoped (poll everything).
+                    _logger.LogDebug("Discord polling cycle starting");
+                    await _discordPollingService.PollAllProjectsAsync(stoppingToken);
+                }
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in Discord polling loop");
                 await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
             }
         }

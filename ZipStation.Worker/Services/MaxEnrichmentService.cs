@@ -2,6 +2,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using MongoDB.Driver;
 using ZipStation.Worker.Entities;
 using ZipStation.Worker.Helpers;
 using ZipStation.Worker.Repositories;
@@ -35,6 +36,9 @@ public class MaxEnrichmentService : IMaxEnrichmentService
     private readonly MaxTicketEnrichmentRepository _enrichmentRepository;
     private readonly MaxTaskRepository _taskRepository;
     private readonly MaxQuestionRepository _questionRepository;
+    private readonly KanbanBoardRepository _kanbanBoardRepository;
+    private readonly MongoDB.Driver.IMongoDatabase _database;
+    private readonly Helpers.AppConfig _appConfig;
     private readonly ILogger<MaxEnrichmentService> _logger;
 
     public MaxEnrichmentService(
@@ -46,6 +50,9 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         MaxTicketEnrichmentRepository enrichmentRepository,
         MaxTaskRepository taskRepository,
         MaxQuestionRepository questionRepository,
+        KanbanBoardRepository kanbanBoardRepository,
+        MongoDB.Driver.IMongoDatabase database,
+        Microsoft.Extensions.Options.IOptions<Helpers.AppConfig> appConfig,
         ILogger<MaxEnrichmentService> logger)
     {
         _projectRepository = projectRepository;
@@ -56,6 +63,9 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         _enrichmentRepository = enrichmentRepository;
         _taskRepository = taskRepository;
         _questionRepository = questionRepository;
+        _kanbanBoardRepository = kanbanBoardRepository;
+        _database = database;
+        _appConfig = appConfig.Value;
         _logger = logger;
     }
 
@@ -94,9 +104,10 @@ public class MaxEnrichmentService : IMaxEnrichmentService
             var openTickets = await _ticketRepository.GetRecentOpenByProjectIdAsync(ticket.ProjectId, MaxOpenTicketsInPrompt, ticketId);
             var openEnrichments = await _enrichmentRepository.GetRecentByProjectIdAsync(ticket.ProjectId, MaxOpenTicketsInPrompt);
             var enrichmentByTicketId = openEnrichments.ToDictionary(e => e.TicketId);
+            var availableStories = await GetAvailableStoriesAsync(ticket.ProjectId);
 
             var systemPrompt = BuildSystemPrompt(project.Settings.Max, instructions, examples);
-            var userMessage = BuildUserMessage(ticket, latestCustomerMessage, openTickets, enrichmentByTicketId);
+            var userMessage = BuildUserMessage(ticket, latestCustomerMessage, openTickets, enrichmentByTicketId, availableStories);
 
             var rawResponse = await CallAnthropicAsync(apiKey, model, systemPrompt, userMessage, cancellationToken);
             if (rawResponse == null)
@@ -473,7 +484,54 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         return sb.ToString();
     }
 
-    private static string BuildUserMessage(Ticket ticket, TicketMessage? latestCustomerMessage, List<Ticket> openTickets, Dictionary<string, MaxTicketEnrichment> enrichmentByTicketId)
+    /// Non-Done Bug/Feature cards updated in the last ~90 days, capped to 25 entries.
+    /// Mirrors the API-side `GetAvailableStoriesAsync` in MaxEnrichmentService so the worker
+    /// can offer link_to_story suggestions on intake instead of always proposing add_to_backlog.
+    private async Task<List<KanbanCard>> GetAvailableStoriesAsync(string projectId)
+    {
+        try
+        {
+            var board = await _kanbanBoardRepository.GetByProjectIdAsync(projectId);
+            if (board is null || board.Columns.Count == 0) return new List<KanbanCard>();
+
+            const int RecencyDays = 90;
+            const int Cap = 25;
+            var cutoff = DateTimeOffset.UtcNow.AddDays(-RecencyDays).ToUnixTimeMilliseconds();
+
+            var collection = _database.GetCollection<KanbanCard>(_appConfig.ZipStationMongoDb.Collections.KanbanCards);
+            var filter = MongoDB.Driver.Builders<KanbanCard>.Filter.Eq(c => c.BoardId, board.Id)
+                       & MongoDB.Driver.Builders<KanbanCard>.Filter.Eq(c => c.IsVoid, false)
+                       & MongoDB.Driver.Builders<KanbanCard>.Filter.Gte(c => c.UpdatedOnDateTime, cutoff)
+                       & MongoDB.Driver.Builders<KanbanCard>.Filter.In(c => c.Type, new[] { 0, 1 }); // Feature, Bug
+            if (!string.IsNullOrEmpty(board.ResolvedColumnId))
+            {
+                filter &= MongoDB.Driver.Builders<KanbanCard>.Filter.Ne(c => c.ColumnId, board.ResolvedColumnId);
+            }
+
+            return await collection.Find(filter)
+                .SortByDescending(c => c.UpdatedOnDateTime)
+                .Limit(Cap)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: if the kanban query blows up we just don't seed available_stories.
+            // The system prompt still tells Max to handle the empty case sensibly.
+            _logger.LogWarning(ex, "Failed to load available stories for project {ProjectId}; using empty list", projectId);
+            return new List<KanbanCard>();
+        }
+    }
+
+    private static string CardTypeName(int type) => type switch
+    {
+        0 => "Feature",
+        1 => "Bug",
+        2 => "Improvement",
+        3 => "TechDebt",
+        _ => "Unknown",
+    };
+
+    private static string BuildUserMessage(Ticket ticket, TicketMessage? latestCustomerMessage, List<Ticket> openTickets, Dictionary<string, MaxTicketEnrichment> enrichmentByTicketId, List<KanbanCard> availableStories)
     {
         var openIssuesPayload = openTickets.Select(t =>
         {
@@ -512,11 +570,17 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         sb.AppendLine(JsonSerializer.Serialize(existingLinksPayload, new JsonSerializerOptions { WriteIndented = false }));
         sb.AppendLine("</existing_links>");
         sb.AppendLine();
-        // Worker has no kanban repos. Maintainer-driven manual re-enrich uses
-        // the API path, which populates the real list; we send empty here so
-        // the prompt schema stays consistent across both code paths.
+        // Recent non-Done Bug/Feature cards in the project — same shape the API path emits.
+        // Lets Max suggest link_to_story on intake (matching project-wide behavior).
+        var availableStoriesPayload = availableStories.Select(c => new
+        {
+            cardNumber = c.CardNumber,
+            title = c.Title,
+            type = CardTypeName(c.Type),
+            is_done = false, // filter already excludes the resolved column
+        }).ToList();
         sb.AppendLine("<available_stories>");
-        sb.AppendLine("[]");
+        sb.AppendLine(JsonSerializer.Serialize(availableStoriesPayload, new JsonSerializerOptions { WriteIndented = false }));
         sb.AppendLine("</available_stories>");
         sb.AppendLine();
         sb.AppendLine("<ticket>");
