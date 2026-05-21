@@ -37,6 +37,7 @@ public class MaxEnrichmentService : IMaxEnrichmentService
     private readonly MaxTaskRepository _taskRepository;
     private readonly MaxQuestionRepository _questionRepository;
     private readonly KanbanBoardRepository _kanbanBoardRepository;
+    private readonly KanbanCardRepository _kanbanCardRepository;
     private readonly MongoDB.Driver.IMongoDatabase _database;
     private readonly Helpers.AppConfig _appConfig;
     private readonly ILogger<MaxEnrichmentService> _logger;
@@ -51,6 +52,7 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         MaxTaskRepository taskRepository,
         MaxQuestionRepository questionRepository,
         KanbanBoardRepository kanbanBoardRepository,
+        KanbanCardRepository kanbanCardRepository,
         MongoDB.Driver.IMongoDatabase database,
         Microsoft.Extensions.Options.IOptions<Helpers.AppConfig> appConfig,
         ILogger<MaxEnrichmentService> logger)
@@ -64,6 +66,7 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         _taskRepository = taskRepository;
         _questionRepository = questionRepository;
         _kanbanBoardRepository = kanbanBoardRepository;
+        _kanbanCardRepository = kanbanCardRepository;
         _database = database;
         _appConfig = appConfig.Value;
         _logger = logger;
@@ -104,10 +107,33 @@ public class MaxEnrichmentService : IMaxEnrichmentService
             var openTickets = await _ticketRepository.GetRecentOpenByProjectIdAsync(ticket.ProjectId, MaxOpenTicketsInPrompt, ticketId);
             var openEnrichments = await _enrichmentRepository.GetRecentByProjectIdAsync(ticket.ProjectId, MaxOpenTicketsInPrompt);
             var enrichmentByTicketId = openEnrichments.ToDictionary(e => e.TicketId);
+
+            // Kanban context — mirrors the API enrichment path so worker-side
+            // auto-enrichment can suggest link_to_story instead of always proposing add_to_backlog.
+            var kanbanBoard = await _kanbanBoardRepository.GetByProjectIdAsync(ticket.ProjectId);
+            var resolvedColumnId = kanbanBoard?.ResolvedColumnId;
+            var linkedKanbanCards = await _kanbanCardRepository.GetByTicketIdAsync(ticketId);
+            var openTicketIds = openTickets.Select(t => t.Id).ToList();
+            var cardsForOpenTickets = openTicketIds.Count > 0
+                ? await _kanbanCardRepository.GetByAnyLinkedTicketIdAsync(openTicketIds)
+                : new List<KanbanCard>();
+            var cardsByLinkedTicketId = new Dictionary<string, List<KanbanCard>>();
+            foreach (var card in cardsForOpenTickets)
+            {
+                foreach (var linkedId in card.LinkedTicketIds)
+                {
+                    if (!cardsByLinkedTicketId.TryGetValue(linkedId, out var list))
+                    {
+                        list = new List<KanbanCard>();
+                        cardsByLinkedTicketId[linkedId] = list;
+                    }
+                    list.Add(card);
+                }
+            }
             var availableStories = await GetAvailableStoriesAsync(ticket.ProjectId);
 
             var systemPrompt = BuildSystemPrompt(project.Settings.Max, instructions, examples);
-            var userMessage = BuildUserMessage(ticket, latestCustomerMessage, openTickets, enrichmentByTicketId, availableStories);
+            var userMessage = BuildUserMessage(ticket, latestCustomerMessage, openTickets, enrichmentByTicketId, linkedKanbanCards, resolvedColumnId, cardsByLinkedTicketId, availableStories);
 
             var rawResponse = await CallAnthropicAsync(apiKey, model, systemPrompt, userMessage, cancellationToken);
             if (rawResponse == null)
@@ -531,11 +557,20 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         _ => "Unknown",
     };
 
-    private static string BuildUserMessage(Ticket ticket, TicketMessage? latestCustomerMessage, List<Ticket> openTickets, Dictionary<string, MaxTicketEnrichment> enrichmentByTicketId, List<KanbanCard> availableStories)
+    private static string BuildUserMessage(
+        Ticket ticket,
+        TicketMessage? latestCustomerMessage,
+        List<Ticket> openTickets,
+        Dictionary<string, MaxTicketEnrichment> enrichmentByTicketId,
+        List<KanbanCard> linkedKanbanCards,
+        string? resolvedColumnId,
+        Dictionary<string, List<KanbanCard>> cardsByLinkedTicketId,
+        List<KanbanCard> availableStories)
     {
         var openIssuesPayload = openTickets.Select(t =>
         {
             enrichmentByTicketId.TryGetValue(t.Id, out var e);
+            cardsByLinkedTicketId.TryGetValue(t.Id, out var cards);
             return new
             {
                 id = t.Id,
@@ -545,20 +580,29 @@ public class MaxEnrichmentService : IMaxEnrichmentService
                 category = e?.Category,
                 summary = e?.Summary,
                 tags = e?.Tags ?? new List<string>(),
-                // Worker doesn't have kanban repos. The API enrichment path (manual
-                // re-enrich, intake/ticket creation) populates this; here we emit
-                // an empty array so the prompt schema stays consistent.
-                linked_stories = new List<object>(),
+                linked_stories = (cards ?? new List<KanbanCard>()).Select(c => new
+                {
+                    cardNumber = c.CardNumber,
+                    title = c.Title,
+                    type = CardTypeName(c.Type),
+                    is_done = !string.IsNullOrEmpty(resolvedColumnId) && c.ColumnId == resolvedColumnId,
+                }).ToList(),
             };
         }).ToList();
 
-        // Worker only enriches brand-new tickets that don't have existing links
-        // yet. We still emit the block so the system prompt's existing-links
-        // rules apply consistently across API and worker enrichment.
+        // Worker enriches brand-new tickets, so linked_ticket_ids on the current
+        // ticket is always empty. linked_stories may be non-empty if any kanban
+        // card was linked to this ticket id before enrichment ran.
         var existingLinksPayload = new
         {
             linked_ticket_ids = new List<string>(),
-            linked_stories = new List<object>(),
+            linked_stories = linkedKanbanCards.Select(c => new
+            {
+                cardNumber = c.CardNumber,
+                title = c.Title,
+                type = CardTypeName(c.Type),
+                is_done = !string.IsNullOrEmpty(resolvedColumnId) && c.ColumnId == resolvedColumnId,
+            }).ToList(),
         };
 
         var sb = new StringBuilder();

@@ -466,6 +466,22 @@ public class KanbanCardRepository
                    & Builders<KanbanCard>.Filter.Eq(c => c.IsVoid, false);
         return await _collection.Find(filter).FirstOrDefaultAsync();
     }
+
+    public async Task<List<KanbanCard>> GetByTicketIdAsync(string ticketId)
+    {
+        var filter = Builders<KanbanCard>.Filter.AnyEq(c => c.LinkedTicketIds, ticketId)
+                   & Builders<KanbanCard>.Filter.Eq(c => c.IsVoid, false);
+        return await _collection.Find(filter).ToListAsync();
+    }
+
+    public async Task<List<KanbanCard>> GetByAnyLinkedTicketIdAsync(IEnumerable<string> ticketIds)
+    {
+        var ids = ticketIds?.Where(id => !string.IsNullOrEmpty(id)).Distinct().ToList() ?? new List<string>();
+        if (ids.Count == 0) return new List<KanbanCard>();
+        var filter = Builders<KanbanCard>.Filter.AnyIn(c => c.LinkedTicketIds, ids)
+                   & Builders<KanbanCard>.Filter.Eq(c => c.IsVoid, false);
+        return await _collection.Find(filter).ToListAsync();
+    }
 }
 
 public class KanbanCardNumberCounterRepository
