@@ -36,6 +36,29 @@ public class ProjectSettings
     public ContactFormSettings? ContactForm { get; set; }
     public FileStorageSettings? FileStorage { get; set; }
     public MaxSettings? Max { get; set; }
+    public DiscordSettings? Discord { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class DiscordSettings
+{
+    public bool Enabled { get; set; }
+    public string BotTokenEncrypted { get; set; } = string.Empty;
+    public List<DiscordSource> Sources { get; set; } = new();
+}
+
+[BsonIgnoreExtraElements]
+public class DiscordSource
+{
+    public string Id { get; set; } = ObjectId.GenerateNewId().ToString();
+    public string Name { get; set; } = string.Empty;
+    public string GuildId { get; set; } = string.Empty;
+    public string ChannelId { get; set; } = string.Empty;
+    public bool IsForum { get; set; } = true;
+    public string? LastSeenId { get; set; }
+    /// Null = "let Max decide". 0=Feature, 1=Bug, 2=Improvement, 3=TechDebt.
+    public int? DefaultCardType { get; set; }
+    public bool Enabled { get; set; } = true;
 }
 
 [BsonIgnoreExtraElements]
@@ -263,6 +286,8 @@ public class MaxTask : BaseEntity
     public string CompanyId { get; set; } = string.Empty;
     public string ProjectId { get; set; } = string.Empty;
     public string TicketId { get; set; } = string.Empty;
+    [BsonIgnoreIfNull]
+    public string? StoryId { get; set; }
     public string Type { get; set; } = string.Empty;
     public string Status { get; set; } = "pending";
     public double Confidence { get; set; }
@@ -283,6 +308,9 @@ public class MaxTaskDetails
     public string? QuestionId { get; set; }
     public long? LinkToStoryCardNumber { get; set; }
     public string? LinkToStoryTitle { get; set; }
+    public string? DuplicateOfStoryId { get; set; }
+    public long? DuplicateOfStoryCardNumber { get; set; }
+    public string? DuplicateOfStoryTitle { get; set; }
 }
 
 [BsonIgnoreExtraElements]
@@ -291,6 +319,7 @@ public class MaxQuestion : BaseEntity
     public string CompanyId { get; set; } = string.Empty;
     public string ProjectId { get; set; } = string.Empty;
     public string? SourceTicketId { get; set; }
+    public string? SourceStoryId { get; set; }
     public string Question { get; set; } = string.Empty;
     public string? ContextExcerpt { get; set; }
     public string Status { get; set; } = "pending";
@@ -321,4 +350,90 @@ public class MaxTicketEnrichment : BaseEntity
     public string? QuestionId { get; set; }
     public string Model { get; set; } = string.Empty;
     public string? RawResponse { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class MaxStoryEnrichment : BaseEntity
+{
+    public string CompanyId { get; set; } = string.Empty;
+    public string ProjectId { get; set; } = string.Empty;
+    public string StoryId { get; set; } = string.Empty;
+    public string Status { get; set; } = "complete";
+    public string Category { get; set; } = "unclear";
+    public string Summary { get; set; } = string.Empty;
+    public double Confidence { get; set; }
+    public string? DuplicateOfStoryId { get; set; }
+    public List<string> RelatedStoryIds { get; set; } = new();
+    public List<string> Tags { get; set; } = new();
+    public string SuggestedActionType { get; set; } = "no_action";
+    public string? SuggestedNotes { get; set; }
+    public string? Reasoning { get; set; }
+    public bool FlaggedQuestion { get; set; }
+    public string? QuestionId { get; set; }
+    public string Model { get; set; } = string.Empty;
+    public string? RawResponse { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class KanbanBoard : BaseEntity
+{
+    public string CompanyId { get; set; } = string.Empty;
+    public string ProjectId { get; set; } = string.Empty;
+    public List<KanbanColumn> Columns { get; set; } = new();
+    public string ResolvedColumnId { get; set; } = string.Empty;
+}
+
+[BsonIgnoreExtraElements]
+public class KanbanColumn
+{
+    public string Id { get; set; } = ObjectId.GenerateNewId().ToString();
+    public string Name { get; set; } = string.Empty;
+    public string? Color { get; set; }
+    public int Position { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class KanbanCard : BaseEntity
+{
+    public string CompanyId { get; set; } = string.Empty;
+    public string ProjectId { get; set; } = string.Empty;
+    public string BoardId { get; set; } = string.Empty;
+    public long CardNumber { get; set; }
+    public string ColumnId { get; set; } = string.Empty;
+    public double Position { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string? DescriptionHtml { get; set; }
+    public int Type { get; set; } // 0=Feature, 1=Bug, 2=Improvement, 3=TechDebt
+    public int Priority { get; set; } = 1; // 0=Low, 1=Normal, 2=High, 3=Urgent
+    public List<string> Tags { get; set; } = new();
+    public string? AssignedToUserId { get; set; }
+    public List<string> LinkedTicketIds { get; set; } = new();
+    public List<string> LinkedStoryIds { get; set; } = new();
+    public long ResolvedOnDateTime { get; set; }
+    public List<KanbanCardExternalSource> ExternalSources { get; set; } = new();
+    public string? CreatedByUserId { get; set; }
+    public string? UpdatedByUserId { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class KanbanCardExternalSource
+{
+    public int Type { get; set; } // 0=Discord
+    public string Url { get; set; } = string.Empty;
+    public string? GuildId { get; set; }
+    public string? ChannelId { get; set; }
+    public string? ThreadId { get; set; }
+    public string? MessageId { get; set; }
+    public string? ThreadTitle { get; set; }
+    public List<string> ForumTags { get; set; } = new();
+    public string? AuthorName { get; set; }
+    public string? AuthorExternalId { get; set; }
+}
+
+public class KanbanCardNumberCounter
+{
+    [BsonId]
+    [BsonElement("_id")]
+    public string ProjectId { get; set; } = string.Empty;
+    public long CurrentValue { get; set; }
 }

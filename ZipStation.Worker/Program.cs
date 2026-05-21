@@ -55,11 +55,17 @@ try
     builder.Services.AddSingleton(sp => new MaxTicketEnrichmentRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxTicketEnrichments));
     builder.Services.AddSingleton(sp => new MaxTaskRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxTasks));
     builder.Services.AddSingleton(sp => new MaxQuestionRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxQuestions));
+    builder.Services.AddSingleton(sp => new KanbanBoardRepository(sp.GetRequiredService<IMongoDatabase>(), collections.KanbanBoards));
+    builder.Services.AddSingleton(sp => new KanbanCardRepository(sp.GetRequiredService<IMongoDatabase>(), collections.KanbanCards));
+    builder.Services.AddSingleton(sp => new KanbanCardNumberCounterRepository(sp.GetRequiredService<IMongoDatabase>(), collections.KanbanCardNumberCounters));
+    builder.Services.AddSingleton(sp => new MaxStoryEnrichmentRepository(sp.GetRequiredService<IMongoDatabase>(), collections.MaxStoryEnrichments));
 
     // Services
     builder.Services.AddSingleton<FileStorageService>();
     builder.Services.AddSingleton<IEmailPollingService, EmailPollingService>();
     builder.Services.AddSingleton<IMaxEnrichmentService, MaxEnrichmentService>();
+    builder.Services.AddSingleton<IMaxStoryTriageService, MaxStoryTriageService>();
+    builder.Services.AddSingleton<IDiscordPollingService, DiscordPollingService>();
 
     // Worker
     builder.Services.AddHostedService<Worker>();

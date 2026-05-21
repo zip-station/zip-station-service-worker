@@ -22,6 +22,35 @@ public class ProjectRepository
                    & Builders<Project>.Filter.Eq(p => p.IsVoid, false);
         return await _collection.Find(filter).FirstOrDefaultAsync();
     }
+
+    public async Task<List<Project>> GetAllWithDiscordEnabledAsync()
+    {
+        // Enabled flag implies the bot token has been set (enforced by API).
+        var filter = Builders<Project>.Filter.Eq(p => p.IsVoid, false)
+                   & Builders<Project>.Filter.Ne(p => p.Settings.Discord, null)
+                   & Builders<Project>.Filter.Eq("settings.discord.enabled", true);
+        return await _collection.Find(filter).ToListAsync();
+    }
+
+    /// Persist a Discord source's cursor after processing new threads/messages.
+    /// Read-modify-write rather than a positional update: Mongo's NamedIdMemberConvention
+    /// silently rewrites any nested `Id` property to BSON `_id`, which makes typed positional
+    /// filters surprisingly hard to get right across both API and worker conventions.
+    /// The worker is the only writer of `LastSeenId`, so a write-write race here can't happen
+    /// — concurrent edits to other source fields (name/channel/etc.) come from the API and
+    /// occur on a different field path, so a stale-read replace would clobber them. To guard
+    /// against that, we re-read just before writing and only touch the cursor.
+    public async Task UpdateDiscordSourceCursorAsync(string projectId, string sourceId, string lastSeenId)
+    {
+        var project = await GetByIdAsync(projectId);
+        var source = project?.Settings?.Discord?.Sources?.FirstOrDefault(s => s.Id == sourceId);
+        if (project is null || source is null) return;
+
+        source.LastSeenId = lastSeenId;
+        project.UpdatedOnDateTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var filter = Builders<Project>.Filter.Eq(p => p.Id, projectId);
+        await _collection.ReplaceOneAsync(filter, project);
+    }
 }
 
 public class IntakeEmailRepository
@@ -285,10 +314,23 @@ public class MaxTicketEnrichmentRepository
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         entity.UpdatedOnDateTime = now;
-        if (entity.CreatedOnDateTime == 0) entity.CreatedOnDateTime = now;
 
-        if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
+        // Preserve existing _id (Mongo treats it as immutable on replace) and CreatedOnDateTime.
+        // BaseEntity ctor auto-generates a fresh ObjectId, so callers passing a brand-new entity
+        // would otherwise hit error code 66 when a doc for this TicketId already exists.
         var filter = Builders<MaxTicketEnrichment>.Filter.Eq(e => e.TicketId, entity.TicketId);
+        var existing = await _collection.Find(filter).FirstOrDefaultAsync();
+        if (existing != null)
+        {
+            entity.Id = existing.Id;
+            entity.CreatedOnDateTime = existing.CreatedOnDateTime;
+        }
+        else
+        {
+            if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
+            if (entity.CreatedOnDateTime == 0) entity.CreatedOnDateTime = now;
+        }
+
         var options = new ReplaceOptions { IsUpsert = true };
         await _collection.ReplaceOneAsync(filter, entity, options);
         return entity;
@@ -321,6 +363,127 @@ public class MaxTaskRepository
             .Set(t => t.UpdatedOnDateTime, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         var result = await _collection.UpdateManyAsync(filter, update);
         return result.ModifiedCount;
+    }
+}
+
+public class MaxStoryEnrichmentRepository
+{
+    private readonly IMongoCollection<MaxStoryEnrichment> _collection;
+    public MaxStoryEnrichmentRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<MaxStoryEnrichment>(collectionName);
+
+    public async Task<MaxStoryEnrichment?> GetByStoryIdAsync(string storyId)
+    {
+        var filter = Builders<MaxStoryEnrichment>.Filter.Eq(e => e.StoryId, storyId)
+                   & Builders<MaxStoryEnrichment>.Filter.Eq(e => e.IsVoid, false);
+        return await _collection.Find(filter).FirstOrDefaultAsync();
+    }
+
+    public async Task<MaxStoryEnrichment> UpsertAsync(MaxStoryEnrichment entity)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        entity.UpdatedOnDateTime = now;
+
+        // Preserve the existing _id when a doc for this StoryId is already in Mongo.
+        // BaseEntity ctor auto-generates a fresh ObjectId, and Mongo treats _id as immutable
+        // on replace, so a naive ReplaceOne would fail with code 66.
+        var filter = Builders<MaxStoryEnrichment>.Filter.Eq(e => e.StoryId, entity.StoryId);
+        var existing = await _collection.Find(filter).FirstOrDefaultAsync();
+        if (existing != null)
+        {
+            entity.Id = existing.Id;
+            entity.CreatedOnDateTime = existing.CreatedOnDateTime;
+        }
+        else
+        {
+            if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
+            if (entity.CreatedOnDateTime == 0) entity.CreatedOnDateTime = now;
+        }
+
+        var options = new ReplaceOptions { IsUpsert = true };
+        await _collection.ReplaceOneAsync(filter, entity, options);
+        return entity;
+    }
+}
+
+public class KanbanBoardRepository
+{
+    private readonly IMongoCollection<KanbanBoard> _collection;
+    public KanbanBoardRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<KanbanBoard>(collectionName);
+
+    public async Task<KanbanBoard?> GetByProjectIdAsync(string projectId)
+    {
+        var filter = Builders<KanbanBoard>.Filter.Eq(b => b.ProjectId, projectId)
+                   & Builders<KanbanBoard>.Filter.Eq(b => b.IsVoid, false);
+        return await _collection.Find(filter).FirstOrDefaultAsync();
+    }
+}
+
+public class KanbanCardRepository
+{
+    private readonly IMongoCollection<KanbanCard> _collection;
+    public KanbanCardRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<KanbanCard>(collectionName);
+
+    public async Task<KanbanCard> CreateAsync(KanbanCard entity)
+    {
+        if (string.IsNullOrEmpty(entity.Id)) entity.Id = ObjectId.GenerateNewId().ToString();
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (entity.CreatedOnDateTime == 0)
+            entity.CreatedOnDateTime = now;
+        entity.UpdatedOnDateTime = now;
+        entity.IsVoid = false;
+        await _collection.InsertOneAsync(entity);
+        return entity;
+    }
+
+    /// Idempotency: skip a Discord thread/message we've already converted to a card.
+    /// Matches a single ExternalSources entry on both type and messageId via $elemMatch.
+    public async Task<KanbanCard?> GetByExternalMessageIdAsync(string projectId, int sourceType, string messageId)
+    {
+        var elemMatch = Builders<KanbanCardExternalSource>.Filter.Eq(s => s.Type, sourceType)
+                      & Builders<KanbanCardExternalSource>.Filter.Eq(s => s.MessageId, messageId);
+        var filter = Builders<KanbanCard>.Filter.Eq(c => c.ProjectId, projectId)
+                   & Builders<KanbanCard>.Filter.Eq(c => c.IsVoid, false)
+                   & Builders<KanbanCard>.Filter.ElemMatch(c => c.ExternalSources, elemMatch);
+        return await _collection.Find(filter).FirstOrDefaultAsync();
+    }
+
+    public async Task<double> GetMaxPositionInColumnAsync(string boardId, string columnId)
+    {
+        var filter = Builders<KanbanCard>.Filter.Eq(c => c.BoardId, boardId)
+                   & Builders<KanbanCard>.Filter.Eq(c => c.ColumnId, columnId)
+                   & Builders<KanbanCard>.Filter.Eq(c => c.IsVoid, false);
+        var top = await _collection.Find(filter)
+            .SortByDescending(c => c.Position)
+            .Limit(1)
+            .FirstOrDefaultAsync();
+        return top?.Position ?? 0;
+    }
+
+    public async Task<KanbanCard?> GetByCardNumberAsync(string projectId, long cardNumber)
+    {
+        var filter = Builders<KanbanCard>.Filter.Eq(c => c.ProjectId, projectId)
+                   & Builders<KanbanCard>.Filter.Eq(c => c.CardNumber, cardNumber)
+                   & Builders<KanbanCard>.Filter.Eq(c => c.IsVoid, false);
+        return await _collection.Find(filter).FirstOrDefaultAsync();
+    }
+}
+
+public class KanbanCardNumberCounterRepository
+{
+    private readonly IMongoCollection<KanbanCardNumberCounter> _collection;
+    public KanbanCardNumberCounterRepository(IMongoDatabase db, string collectionName) => _collection = db.GetCollection<KanbanCardNumberCounter>(collectionName);
+
+    public async Task<long> GetNextCardNumberAsync(string projectId)
+    {
+        var filter = Builders<KanbanCardNumberCounter>.Filter.Eq(c => c.ProjectId, projectId);
+        var update = Builders<KanbanCardNumberCounter>.Update.Inc(c => c.CurrentValue, 1);
+        var options = new FindOneAndUpdateOptions<KanbanCardNumberCounter>
+        {
+            IsUpsert = true,
+            ReturnDocument = ReturnDocument.After
+        };
+        var result = await _collection.FindOneAndUpdateAsync(filter, update, options);
+        return result.CurrentValue;
     }
 }
 
