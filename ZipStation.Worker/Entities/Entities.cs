@@ -56,8 +56,10 @@ public class DiscordSource
     public string ChannelId { get; set; } = string.Empty;
     public bool IsForum { get; set; } = true;
     public string? LastSeenId { get; set; }
-    /// Null = "let Max decide". 0=Feature, 1=Bug, 2=Improvement, 3=TechDebt.
-    public int? DefaultCardType { get; set; }
+    /// Null = "let Max decide". A built-in type name or a custom type id. Serializer tolerates
+    /// legacy int values (0=Feature, 1=Bug, 2=Improvement, 3=TechDebt).
+    [BsonSerializer(typeof(LegacyCardTypeStringSerializer))]
+    public string? DefaultCardType { get; set; }
     public bool Enabled { get; set; } = true;
 }
 
@@ -381,6 +383,15 @@ public class KanbanBoard : BaseEntity
     public string ProjectId { get; set; } = string.Empty;
     public List<KanbanColumn> Columns { get; set; } = new();
     public string ResolvedColumnId { get; set; } = string.Empty;
+    public List<KanbanCardTypeDefinition> CustomCardTypes { get; set; } = new();
+}
+
+[BsonIgnoreExtraElements]
+public class KanbanCardTypeDefinition
+{
+    public string Id { get; set; } = ObjectId.GenerateNewId().ToString();
+    public string Label { get; set; } = string.Empty;
+    public string? Color { get; set; }
 }
 
 [BsonIgnoreExtraElements]
@@ -403,7 +414,9 @@ public class KanbanCard : BaseEntity
     public double Position { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? DescriptionHtml { get; set; }
-    public int Type { get; set; } // 0=Feature, 1=Bug, 2=Improvement, 3=TechDebt
+    /// Built-in type name or a custom type id. Serializer tolerates legacy int values (0–3).
+    [BsonSerializer(typeof(LegacyCardTypeStringSerializer))]
+    public string Type { get; set; } = KanbanCardTypes.Feature;
     public int Priority { get; set; } = 1; // 0=Low, 1=Normal, 2=High, 3=Urgent
     public List<string> Tags { get; set; } = new();
     public string? AssignedToUserId { get; set; }

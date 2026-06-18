@@ -311,7 +311,7 @@ public class DiscordPollingService : IDiscordPollingService
             var card = await CreateCardCoreAsync(
                 project, boardId, firstColumnId, source, thread, starter,
                 title: fallbackTitle,
-                type: source.DefaultCardType ?? 1, // Bug
+                type: source.DefaultCardType ?? KanbanCardTypes.Bug,
                 priority: 1,
                 tags: new(),
                 descriptionHtml: descriptionHtml,
@@ -368,7 +368,7 @@ public class DiscordPollingService : IDiscordPollingService
     private async Task<KanbanCard> CreateCardCoreAsync(
         Project project, string boardId, string firstColumnId,
         DiscordSource source, DiscordThread thread, DiscordMessage? starter,
-        string title, int type, int priority, List<string> tags, string descriptionHtml,
+        string title, string type, int priority, List<string> tags, string descriptionHtml,
         List<string> forumTagNames)
     {
         var cardNumber = await _cardNumberCounter.GetNextCardNumberAsync(project.Id);
@@ -466,12 +466,12 @@ public class DiscordPollingService : IDiscordPollingService
         });
     }
 
-    private static string CategoryForCardType(int type) => type switch
+    private static string CategoryForCardType(string? type) => type switch
     {
-        0 => "feature",
-        1 => "bug",
-        2 => "improvement",
-        3 => "tech_debt",
+        KanbanCardTypes.Feature => "feature",
+        KanbanCardTypes.Bug => "bug",
+        KanbanCardTypes.Improvement => "improvement",
+        KanbanCardTypes.TechDebt => "tech_debt",
         _ => "unclear",
     };
 

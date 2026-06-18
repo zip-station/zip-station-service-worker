@@ -27,8 +27,9 @@ public class DiscordPostContext
     public List<string> ForumTags { get; init; } = new();
     public string? AuthorName { get; init; }
     public string SourceName { get; init; } = string.Empty;
-    /// Default card type from the source row. Null = "Auto, let Max decide" (queued from chunk 1 UX).
-    public int? SourceDefaultCardType { get; init; }
+    /// Default card type from the source row (built-in name or custom type id). Null = "Auto,
+    /// let Max decide" (queued from chunk 1 UX).
+    public string? SourceDefaultCardType { get; init; }
 }
 
 public class TriageResult
@@ -45,8 +46,9 @@ public class TriageResult
 public class ProposedCard
 {
     public string Title { get; init; } = string.Empty;
-    /// One of Feature(0), Bug(1), Improvement(2), TechDebt(3). Falls back to source default if Max gave nothing.
-    public int Type { get; init; }
+    /// A built-in type name (Feature/Bug/Improvement/TechDebt) or, via the source default, a
+    /// custom type id. Falls back to the source default if Max gave nothing.
+    public string Type { get; init; } = KanbanCardTypes.Bug;
     /// 0=Low, 1=Normal, 2=High, 3=Urgent.
     public int Priority { get; init; } = 1;
     public List<string> Tags { get; init; } = new();
@@ -206,8 +208,8 @@ public class MaxStoryTriageService : IMaxStoryTriageService
         sb.AppendLine("1. **Card count**: Usually one post = one card. Split into multiple cards ONLY when the post clearly describes multiple independent issues (e.g. \"Bug 1: login broken. Bug 2: avatar upload fails.\"). When in doubt, output a single card.");
         sb.AppendLine();
         sb.AppendLine("2. **Type**: classify each card as one of: Feature, Bug, Improvement, TechDebt.");
-        if (post.SourceDefaultCardType.HasValue)
-            sb.AppendLine($"   - This source's default type is {CardTypeName(post.SourceDefaultCardType.Value)}. Use that unless the post clearly indicates otherwise.");
+        if (!string.IsNullOrWhiteSpace(post.SourceDefaultCardType))
+            sb.AppendLine($"   - This source's default type is {CardTypeName(post.SourceDefaultCardType)}. Use that unless the post clearly indicates otherwise.");
         else
             sb.AppendLine("   - The source has no default — choose based on the post content alone.");
         sb.AppendLine();
@@ -353,16 +355,16 @@ public class MaxStoryTriageService : IMaxStoryTriageService
         }
     }
 
-    private static int NormalizeCardType(string? raw, int? sourceDefault)
+    private static string NormalizeCardType(string? raw, string? sourceDefault)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return sourceDefault ?? 1; // Bug fallback
+        if (string.IsNullOrWhiteSpace(raw)) return sourceDefault ?? KanbanCardTypes.Bug;
         return raw.Trim().ToLowerInvariant() switch
         {
-            "feature" => 0,
-            "bug" => 1,
-            "improvement" => 2,
-            "techdebt" or "tech_debt" or "tech-debt" => 3,
-            _ => sourceDefault ?? 1,
+            "feature" => KanbanCardTypes.Feature,
+            "bug" => KanbanCardTypes.Bug,
+            "improvement" => KanbanCardTypes.Improvement,
+            "techdebt" or "tech_debt" or "tech-debt" => KanbanCardTypes.TechDebt,
+            _ => sourceDefault ?? KanbanCardTypes.Bug,
         };
     }
 
@@ -379,14 +381,10 @@ public class MaxStoryTriageService : IMaxStoryTriageService
         };
     }
 
-    private static string CardTypeName(int type) => type switch
-    {
-        0 => "Feature",
-        1 => "Bug",
-        2 => "Improvement",
-        3 => "TechDebt",
-        _ => "Unknown",
-    };
+    /// Story type is already a string (built-in name or custom id). Built-ins are shown as-is;
+    /// a custom id is shown verbatim (rare — only when a source default points at a custom type).
+    private static string CardTypeName(string? type) =>
+        string.IsNullOrWhiteSpace(type) ? "Unknown" : type;
 
     private class ParsedTriage
     {

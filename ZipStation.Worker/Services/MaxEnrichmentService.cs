@@ -541,7 +541,7 @@ public class MaxEnrichmentService : IMaxEnrichmentService
             var filter = MongoDB.Driver.Builders<KanbanCard>.Filter.Eq(c => c.BoardId, board.Id)
                        & MongoDB.Driver.Builders<KanbanCard>.Filter.Eq(c => c.IsVoid, false)
                        & MongoDB.Driver.Builders<KanbanCard>.Filter.Gte(c => c.UpdatedOnDateTime, cutoff)
-                       & MongoDB.Driver.Builders<KanbanCard>.Filter.In(c => c.Type, new[] { 0, 1 }); // Feature, Bug
+                       & MongoDB.Driver.Builders<KanbanCard>.Filter.In(c => c.Type, new[] { KanbanCardTypes.Feature, KanbanCardTypes.Bug });
             if (!string.IsNullOrEmpty(board.ResolvedColumnId))
             {
                 filter &= MongoDB.Driver.Builders<KanbanCard>.Filter.Ne(c => c.ColumnId, board.ResolvedColumnId);
@@ -561,14 +561,9 @@ public class MaxEnrichmentService : IMaxEnrichmentService
         }
     }
 
-    private static string CardTypeName(int type) => type switch
-    {
-        0 => "Feature",
-        1 => "Bug",
-        2 => "Improvement",
-        3 => "TechDebt",
-        _ => "Unknown",
-    };
+    /// Story type is already a string (built-in name or custom id); shown as-is for prompt context.
+    private static string CardTypeName(string? type) =>
+        string.IsNullOrWhiteSpace(type) ? "Unknown" : type;
 
     private static string BuildUserMessage(
         Ticket ticket,
