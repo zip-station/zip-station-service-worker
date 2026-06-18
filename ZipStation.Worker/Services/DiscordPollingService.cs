@@ -115,7 +115,10 @@ public class DiscordPollingService : IDiscordPollingService
             _logger.LogWarning("Discord poll skipped for project {ProjectId}: no kanban board / columns", project.Id);
             return;
         }
-        var firstColumn = board.Columns.OrderBy(c => c.Position).First();
+        // Automated intake lands in the board's configured intake column (falls back to the
+        // lowest-position column when unset). Avoids silently dropping cards into whatever
+        // column happens to sit at position 0 — e.g. an "Obsolete" column added in front.
+        var intakeColumnId = board.ResolveIntakeColumnId();
 
         foreach (var source in discord.Sources.Where(s => s.Enabled))
         {
@@ -149,7 +152,7 @@ public class DiscordPollingService : IDiscordPollingService
                     }
 
                     var starter = await TryFetchStarterMessageAsync(token, thread.Id, ct);
-                    await ProcessNewThreadAsync(project, board.Id, firstColumn.Id, source, thread, starter, forumTagNames, ct);
+                    await ProcessNewThreadAsync(project, board.Id, intakeColumnId, source, thread, starter, forumTagNames, ct);
                     created++;
 
                     if (CompareSnowflake(thread.Id, maxIdSeen) > 0) maxIdSeen = thread.Id;
