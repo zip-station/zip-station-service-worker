@@ -32,6 +32,8 @@ public class ProjectSettings
     public SmtpSettings? Smtp { get; set; }
     public TicketIdSettings TicketId { get; set; } = new();
     public int StaleTicketDays { get; set; } = 5;
+    // Days a Resolved story waits before the worker auto-archives it (mirrors the API setting).
+    public int KanbanArchiveDays { get; set; } = 3;
     public SpamSettings? Spam { get; set; }
     public ContactFormSettings? ContactForm { get; set; }
     public FileStorageSettings? FileStorage { get; set; }
@@ -422,6 +424,12 @@ public class KanbanCard : BaseEntity
     public long CardNumber { get; set; }
     public string ColumnId { get; set; } = string.Empty;
     public double Position { get; set; }
+    // 0=Unreviewed, 1=Backlog, 2=Committed, 3=Resolved, 4=Archived, 5=Obsolete. Mirrors
+    // ZipStation.Models.Enums.KanbanStoryStatus in the API. Defaults to Committed so legacy cards
+    // (written before this field existed) read back on the board unchanged.
+    public int Status { get; set; } = 2;
+    // Hand-ordering rank for the backlog grid (lower = higher priority). Per-board.
+    public double BacklogPosition { get; set; }
     public string Title { get; set; } = string.Empty;
     public string? DescriptionHtml { get; set; }
     /// Built-in type name or a custom type id. Serializer tolerates legacy int values (0–3).

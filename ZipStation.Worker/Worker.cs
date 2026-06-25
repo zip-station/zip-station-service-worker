@@ -41,7 +41,8 @@ public class Worker : BackgroundService
                     PollDiscordAsync(stoppingToken),
                     MonitorAlertsAsync(stoppingToken),
                     ComputeResponseTimeStatsAsync(stoppingToken),
-                    CleanupAbandonedTicketsAsync(stoppingToken)
+                    CleanupAbandonedTicketsAsync(stoppingToken),
+                    ArchiveResolvedStoriesAsync(stoppingToken)
                 };
 
                 await Task.WhenAll(processes);
@@ -297,6 +298,63 @@ public class Worker : BackgroundService
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in abandoned ticket cleanup loop");
+                await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+            }
+        }
+    }
+
+    /// Auto-archive resolved stories: once a story has sat in the Resolved state (status 3) longer
+    /// than its project's KanbanArchiveDays, flip it to Archived (status 4) so it drops out of the
+    /// default backlog/board views while remaining recoverable. Distinct from Obsolete — these were
+    /// completed, not scrapped.
+    private async Task ArchiveResolvedStoriesAsync(CancellationToken stoppingToken)
+    {
+        // Wait for initial startup
+        await Task.Delay(TimeSpan.FromMinutes(2), stoppingToken);
+
+        const int ResolvedStatus = 3;
+        const int ArchivedStatus = 4;
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                _logger.LogDebug("Resolved story auto-archive starting");
+
+                var allProjects = await _database
+                    .GetCollection<Entities.Project>(_appConfig.ZipStationMongoDb.Collections.Projects)
+                    .Find(MongoDB.Driver.Builders<Entities.Project>.Filter.Eq(p => p.IsVoid, false))
+                    .ToListAsync(stoppingToken);
+
+                var cardsCollection = _database.GetCollection<Entities.KanbanCard>(_appConfig.ZipStationMongoDb.Collections.KanbanCards);
+
+                foreach (var project in allProjects)
+                {
+                    var archiveDays = project.Settings?.KanbanArchiveDays > 0 ? project.Settings.KanbanArchiveDays : 3;
+                    var cutoff = DateTimeOffset.UtcNow.AddDays(-archiveDays).ToUnixTimeMilliseconds();
+
+                    var filter = MongoDB.Driver.Builders<Entities.KanbanCard>.Filter.Eq(c => c.ProjectId, project.Id)
+                               & MongoDB.Driver.Builders<Entities.KanbanCard>.Filter.Eq(c => c.IsVoid, false)
+                               & MongoDB.Driver.Builders<Entities.KanbanCard>.Filter.Eq(c => c.Status, ResolvedStatus)
+                               & MongoDB.Driver.Builders<Entities.KanbanCard>.Filter.Gt(c => c.ResolvedOnDateTime, 0)
+                               & MongoDB.Driver.Builders<Entities.KanbanCard>.Filter.Lt(c => c.ResolvedOnDateTime, cutoff);
+
+                    var update = MongoDB.Driver.Builders<Entities.KanbanCard>.Update
+                        .Set(c => c.Status, ArchivedStatus)
+                        .Set(c => c.UpdatedOnDateTime, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+                    var result = await cardsCollection.UpdateManyAsync(filter, update, cancellationToken: stoppingToken);
+                    if (result.ModifiedCount > 0)
+                        _logger.LogInformation("Auto-archived {Count} resolved stories in project {ProjectName} (older than {Days} days)",
+                            result.ModifiedCount, project.Name, archiveDays);
+                }
+
+                await Task.Delay(TimeSpan.FromHours(6), stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error in resolved story auto-archive loop");
                 await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
             }
         }

@@ -386,6 +386,10 @@ public class DiscordPollingService : IDiscordPollingService
             CardNumber = cardNumber,
             ColumnId = firstColumnId,
             Position = maxPosition + 1,
+            // Auto-created from Discord — lands as Unreviewed (status 0) in the backlog, off the
+            // board, until a maintainer triages it. ColumnId is just a placeholder until committed.
+            Status = 0,
+            BacklogPosition = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Title = Truncate(title, 200),
             DescriptionHtml = descriptionHtml,
             Type = type,
