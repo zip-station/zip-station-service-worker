@@ -115,11 +115,8 @@ public class DiscordPollingService : IDiscordPollingService
             _logger.LogWarning("Discord poll skipped for project {ProjectId}: no kanban board / columns", project.Id);
             return;
         }
-        // Automated intake lands in the board's configured intake column (falls back to the
-        // lowest-position column when unset). Avoids silently dropping cards into whatever
-        // column happens to sit at position 0 — e.g. an "Obsolete" column added in front.
-        var intakeColumnId = board.ResolveIntakeColumnId();
-
+        // Automated intake lands as Unreviewed, off the board — no column. A column is assigned
+        // only when a maintainer commits the card onto the board (see KanbanStatusRules).
         foreach (var source in discord.Sources.Where(s => s.Enabled))
         {
             if (ct.IsCancellationRequested) break;
@@ -152,7 +149,7 @@ public class DiscordPollingService : IDiscordPollingService
                     }
 
                     var starter = await TryFetchStarterMessageAsync(token, thread.Id, ct);
-                    await ProcessNewThreadAsync(project, board.Id, intakeColumnId, source, thread, starter, forumTagNames, ct);
+                    await ProcessNewThreadAsync(project, board.Id, source, thread, starter, forumTagNames, ct);
                     created++;
 
                     if (CompareSnowflake(thread.Id, maxIdSeen) > 0) maxIdSeen = thread.Id;
@@ -278,7 +275,7 @@ public class DiscordPollingService : IDiscordPollingService
 
     /// Convert one new Discord thread into one-or-more kanban cards, optionally enriched by Max.
     private async Task ProcessNewThreadAsync(
-        Project project, string boardId, string firstColumnId,
+        Project project, string boardId,
         DiscordSource source, DiscordThread thread, DiscordMessage? starter,
         IReadOnlyDictionary<string, string> forumTagNames,
         CancellationToken ct)
@@ -312,7 +309,7 @@ public class DiscordPollingService : IDiscordPollingService
             // Fallback path: Max is disabled, failed, or returned nothing.
             // If the source has no default type ("Auto"), there's no Max to make the call — fall back to Bug.
             var card = await CreateCardCoreAsync(
-                project, boardId, firstColumnId, source, thread, starter,
+                project, boardId, source, thread, starter,
                 title: fallbackTitle,
                 type: source.DefaultCardType ?? KanbanCardTypes.Bug,
                 priority: 1,
@@ -337,7 +334,7 @@ public class DiscordPollingService : IDiscordPollingService
                 : descriptionHtml;
 
             var card = await CreateCardCoreAsync(
-                project, boardId, firstColumnId, source, thread, starter,
+                project, boardId, source, thread, starter,
                 title: proposed.Title,
                 type: proposed.Type,
                 priority: proposed.Priority,
@@ -369,13 +366,12 @@ public class DiscordPollingService : IDiscordPollingService
     }
 
     private async Task<KanbanCard> CreateCardCoreAsync(
-        Project project, string boardId, string firstColumnId,
+        Project project, string boardId,
         DiscordSource source, DiscordThread thread, DiscordMessage? starter,
         string title, string type, int priority, List<string> tags, string descriptionHtml,
         List<string> forumTagNames)
     {
         var cardNumber = await _cardNumberCounter.GetNextCardNumberAsync(project.Id);
-        var maxPosition = await _cardRepository.GetMaxPositionInColumnAsync(boardId, firstColumnId);
 
         var card = new KanbanCard
         {
@@ -384,10 +380,11 @@ public class DiscordPollingService : IDiscordPollingService
             ProjectId = project.Id,
             BoardId = boardId,
             CardNumber = cardNumber,
-            ColumnId = firstColumnId,
-            Position = maxPosition + 1,
-            // Auto-created from Discord — lands as Unreviewed (status 0) in the backlog, off the
-            // board, until a maintainer triages it. ColumnId is just a placeholder until committed.
+            // Auto-created from Discord — lands as Unreviewed (status 0), off the board, until a
+            // maintainer triages it. Off-board cards have no column; the backlog grid orders them
+            // by BacklogPosition. A column is assigned only when the card is committed onto the board.
+            ColumnId = string.Empty,
+            Position = 0,
             Status = 0,
             BacklogPosition = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Title = Truncate(title, 200),
