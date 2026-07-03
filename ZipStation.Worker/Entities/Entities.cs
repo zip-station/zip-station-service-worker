@@ -385,17 +385,7 @@ public class KanbanBoard : BaseEntity
     public string ProjectId { get; set; } = string.Empty;
     public List<KanbanColumn> Columns { get; set; } = new();
     public string ResolvedColumnId { get; set; } = string.Empty;
-    public string IntakeColumnId { get; set; } = string.Empty;
     public List<KanbanCardTypeDefinition> CustomCardTypes { get; set; } = new();
-
-    /// Mirror of the API helper: the column automated intake drops new cards into — the
-    /// configured IntakeColumnId when valid, else the lowest-position column (legacy behavior).
-    public string ResolveIntakeColumnId()
-    {
-        if (!string.IsNullOrEmpty(IntakeColumnId) && Columns.Any(c => c.Id == IntakeColumnId))
-            return IntakeColumnId;
-        return Columns.OrderBy(c => c.Position).First().Id;
-    }
 }
 
 [BsonIgnoreExtraElements]
