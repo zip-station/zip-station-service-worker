@@ -432,6 +432,10 @@ public class KanbanCard : BaseEntity
     public List<string> LinkedStoryIds { get; set; } = new();
     public long ResolvedOnDateTime { get; set; }
     public List<KanbanCardExternalSource> ExternalSources { get; set; } = new();
+    /// Video files pinned to the story. Mirrors ZipStation.Models.Entities.KanbanCard.Attachments
+    /// in the API — kept here so full-document card writes don't drop the field.
+    [BsonIgnoreIfNull]
+    public List<MessageAttachment>? Attachments { get; set; }
     public string? CreatedByUserId { get; set; }
     public string? UpdatedByUserId { get; set; }
 }
