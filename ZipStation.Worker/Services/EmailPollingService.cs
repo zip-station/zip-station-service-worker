@@ -29,6 +29,7 @@ public class EmailPollingService : IEmailPollingService
     private readonly MongoDB.Driver.IMongoDatabase _database;
     private readonly Helpers.AppConfig _appConfig;
     private readonly IMaxEnrichmentService _maxEnrichmentService;
+    private readonly UserLookupService _userLookupService;
     private static readonly HttpClient _webhookClient = new() { Timeout = TimeSpan.FromSeconds(10) };
 
     public EmailPollingService(
@@ -43,7 +44,8 @@ public class EmailPollingService : IEmailPollingService
         FileStorageService fileStorageService,
         MongoDB.Driver.IMongoDatabase database,
         Microsoft.Extensions.Options.IOptions<Helpers.AppConfig> appConfig,
-        IMaxEnrichmentService maxEnrichmentService)
+        IMaxEnrichmentService maxEnrichmentService,
+        UserLookupService userLookupService)
     {
         _logger = logger;
         _projectRepository = projectRepository;
@@ -57,6 +59,7 @@ public class EmailPollingService : IEmailPollingService
         _database = database;
         _appConfig = appConfig.Value;
         _maxEnrichmentService = maxEnrichmentService;
+        _userLookupService = userLookupService;
     }
 
     /// <summary>
@@ -576,6 +579,9 @@ public class EmailPollingService : IEmailPollingService
 
         // Fire alerts for new ticket
         await FireAlertsForNewTicketAsync(project, createdTicket);
+
+        // Resolve the customer's external user id (service never throws)
+        await _userLookupService.LookupAndStoreAsync(project, intake.FromEmail);
 
         _logger.LogInformation("Auto-approved intake created ticket {TicketId} for {Email}",
             createdTicket.Id, intake.FromEmail);

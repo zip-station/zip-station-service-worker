@@ -39,6 +39,17 @@ public class ProjectSettings
     public FileStorageSettings? FileStorage { get; set; }
     public MaxSettings? Max { get; set; }
     public DiscordSettings? Discord { get; set; }
+    public UserLookupSettings? UserLookup { get; set; }
+}
+
+[BsonIgnoreExtraElements]
+public class UserLookupSettings
+{
+    public bool Enabled { get; set; }
+    public string Url { get; set; } = string.Empty;
+    public string UserIdField { get; set; } = string.Empty;
+    public string? AuthHeaderName { get; set; }
+    public string? AuthHeaderValue { get; set; } // encrypted
 }
 
 [BsonIgnoreExtraElements]
@@ -235,6 +246,11 @@ public class Customer : BaseEntity
     public List<string> Tags { get; set; } = new();
     public string? Notes { get; set; }
     public bool IsBanned { get; set; }
+    // Mirrored from the API entity — worker replaces customer docs when updating counts,
+    // so missing fields here would be silently wiped.
+    public Dictionary<string, string> Properties { get; set; } = new();
+    [BsonIgnoreIfNull]
+    public string? ExternalUserId { get; set; }
     public int OpenTicketCount { get; set; }
     public int ClosedTicketCount { get; set; }
     public int TotalTicketCount { get; set; }

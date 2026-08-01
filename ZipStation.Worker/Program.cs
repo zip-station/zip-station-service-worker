@@ -62,6 +62,7 @@ try
 
     // Services
     builder.Services.AddSingleton<FileStorageService>();
+    builder.Services.AddSingleton<UserLookupService>();
     builder.Services.AddSingleton<IEmailPollingService, EmailPollingService>();
     builder.Services.AddSingleton<IMaxEnrichmentService, MaxEnrichmentService>();
     builder.Services.AddSingleton<IMaxStoryTriageService, MaxStoryTriageService>();
