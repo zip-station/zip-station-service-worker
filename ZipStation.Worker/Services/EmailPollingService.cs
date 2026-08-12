@@ -387,8 +387,9 @@ public class EmailPollingService : IEmailPollingService
             return false;
         }
 
-        // If ticket was Closed or Resolved, reopen it
-        if (existingTicket.Status is 2 or 3) // Resolved=2, Closed=3
+        // If ticket was Resolved, Closed, or Abandoned, reopen it.
+        // Merged (4) is deliberately excluded — the conversation lives on the merge target.
+        if (existingTicket.Status is 2 or 3 or 5) // Resolved=2, Closed=3, Abandoned=5
         {
             _logger.LogInformation("Reopening ticket {TicketId} (was status={Status}) due to customer reply",
                 existingTicket.Id, existingTicket.Status);
